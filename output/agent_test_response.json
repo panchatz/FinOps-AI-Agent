@@ -1,0 +1,45 @@
+**Recommendations**
+
+{
+  "recommendations": [
+    {
+      "resource_id": "vm-prod-01",
+      "change": "Right-size VM instance to match actual utilization",
+      "why": "VM is significantly underutilized (18% CPU, 31% memory) and has a high monthly cost ($420). Right-sizing would reduce waste and costs.",
+      "monthly_saving": "$140"
+    },
+    {
+      "resource_id": "vm-prod-02",
+      "change": "Right-size VM instance to match actual utilization",
+      "why": "VM is significantly underutilized (44% CPU, 62% memory) but is policy-locked. Reviewing and adjusting the right-sizing plan for this resource could be considered in a future review.",
+      "monthly_saving": "$140"
+    },
+    {
+      "resource_id": "storage-01",
+      "change": "Migrate to storage tier with lower costs",
+      "why": "Storage is underutilized (0% CPU, 0% memory) and has high monthly cost ($190). Migrating to a lower-cost storage tier would reduce waste and costs.",
+      "monthly_saving": "$50"
+    },
+    {
+      "resource_id": "storage-02",
+      "change": "Review storage utilization and consider rightsizing or tiering",
+      "why": "Storage is underutilized (0% CPU, 0% memory) but is policy-locked. Reviewing and adjusting the storage plan for this resource could be considered in a future review.",
+      "monthly_saving": "$20"
+    },
+    {
+      "resource_id": "vm-dev-01",
+      "change": "Schedule shutdown during non-business hours to reduce costs",
+      "why": "VM is only used during business hours and has high monthly cost ($260). Scheduling shutdown during non-business hours would significantly reduce waste and costs.",
+      "monthly_saving": "$120"
+    },
+    {
+      "resource_id": "vm-test-01",
+      "change": "Schedule shutdown during non-business hours to reduce costs",
+      "why": "VM is only used during business hours and has moderate monthly cost ($180). Scheduling shutdown during non-business hours would reduce waste and costs.",
+      "monthly_saving": "$60"
+    }
+  ],
+  "summary": "These recommendations focus on practical, low-risk changes that can be made to reduce costs without impacting the quality of service. By right-sizing underutilized resources, migrating to lower-cost storage tiers, and scheduling shutdowns during non-business hours, we estimate a total monthly saving of $690."
+}
+
+Note: The estimated monthly savings are based on the assumption that no other cost-optimization opportunities exist for these resources. The actual savings may vary depending on various factors such as changes in utilization patterns or availability of lower-cost storage tiers.
