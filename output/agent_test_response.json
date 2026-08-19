@@ -1,45 +1,71 @@
-**Recommendations**
+Here is a set of cost-optimisation recommendations based on the provided cloud resource inventory:
 
+```json
 {
+  "summary": "Low-risk cost optimisation opportunities identified",
   "recommendations": [
     {
       "resource_id": "vm-prod-01",
-      "change": "Right-size VM instance to match actual utilization",
-      "why": "VM is significantly underutilized (18% CPU, 31% memory) and has a high monthly cost ($420). Right-sizing would reduce waste and costs.",
-      "monthly_saving": "$140"
-    },
-    {
-      "resource_id": "vm-prod-02",
-      "change": "Right-size VM instance to match actual utilization",
-      "why": "VM is significantly underutilized (44% CPU, 62% memory) but is policy-locked. Reviewing and adjusting the right-sizing plan for this resource could be considered in a future review.",
-      "monthly_saving": "$140"
-    },
-    {
-      "resource_id": "storage-01",
-      "change": "Migrate to storage tier with lower costs",
-      "why": "Storage is underutilized (0% CPU, 0% memory) and has high monthly cost ($190). Migrating to a lower-cost storage tier would reduce waste and costs.",
-      "monthly_saving": "$50"
-    },
-    {
-      "resource_id": "storage-02",
-      "change": "Review storage utilization and consider rightsizing or tiering",
-      "why": "Storage is underutilized (0% CPU, 0% memory) but is policy-locked. Reviewing and adjusting the storage plan for this resource could be considered in a future review.",
-      "monthly_saving": "$20"
+      "team": "core-platform",
+      "environment": "prod",
+      "service": "vm",
+      "monthly_cost": "420.00",
+      "cpu_utilization": "18",
+      "memory_utilization": "31",
+      "uptime_required": "24x7",
+      "policy_locked": "false",
+      "schedule_eligible": "false",
+      "storage_tier_eligible": "false",
+      "suggested_change": {
+        "rightsize_instance_type": true,
+        "estimated_savings": 10.00
+      },
+      "rationale": "Instance type can be downgraded to a smaller instance size without impacting performance, given the low CPU and memory utilisation."
     },
     {
       "resource_id": "vm-dev-01",
-      "change": "Schedule shutdown during non-business hours to reduce costs",
-      "why": "VM is only used during business hours and has high monthly cost ($260). Scheduling shutdown during non-business hours would significantly reduce waste and costs.",
-      "monthly_saving": "$120"
+      "team": "analytics",
+      "environment": "dev",
+      "service": "vm",
+      "monthly_cost": "260.00",
+      "cpu_utilization": "12",
+      "memory_utilization": "28",
+      "uptime_required": "business-hours",
+      "policy_locked": "false",
+      "schedule_eligible": "true",
+      "storage_tier_eligible": "false",
+      "suggested_change": {
+        "enable_schedule": true,
+        "estimated_savings": 50.00
+      },
+      "rationale": "VM can be scheduled to run only during business hours, reducing unnecessary costs when not in use."
     },
     {
-      "resource_id": "vm-test-01",
-      "change": "Schedule shutdown during non-business hours to reduce costs",
-      "why": "VM is only used during business hours and has moderate monthly cost ($180). Scheduling shutdown during non-business hours would reduce waste and costs.",
-      "monthly_saving": "$60"
+      "resource_id": "storage-01",
+      "team": "data-eng",
+      "environment": "prod",
+      "service": "storage",
+      "monthly_cost": "190.00",
+      "cpu_utilization": "0",
+      "memory_utilization": "0",
+      "uptime_required": "24x7",
+      "policy_locked": "false",
+      "schedule_eligible": "false",
+      "storage_tier_eligible": "true",
+      "suggested_change": {
+        "tier_storage_downgrade": true,
+        "estimated_savings": 20.00
+      },
+      "rationale": "Storage tier can be downgraded to a lower-cost option, given the low CPU and memory utilisation."
     }
-  ],
-  "summary": "These recommendations focus on practical, low-risk changes that can be made to reduce costs without impacting the quality of service. By right-sizing underutilized resources, migrating to lower-cost storage tiers, and scheduling shutdowns during non-business hours, we estimate a total monthly saving of $690."
+  ]
 }
+```
 
-Note: The estimated monthly savings are based on the assumption that no other cost-optimization opportunities exist for these resources. The actual savings may vary depending on various factors such as changes in utilization patterns or availability of lower-cost storage tiers.
+Summary:
+
+* Rightsize instance type for `vm-prod-01` to save approximately $10 per month.
+* Enable scheduling for `vm-dev-01` to save approximately $50 per month.
+* Downgrade storage tier for `storage-01` to save approximately $20 per month.
+
+These recommendations focus on practical, low-risk changes that can be made without impacting performance or uptime requirements. They are based on the assumption that the resources are not policy-locked and can be modified accordingly.

@@ -5,7 +5,8 @@ import json
 import sys
 from pathlib import Path
 
-import requests
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_ollama import ChatOllama
 
 OLLAMA_HOST = "http://localhost:11434"
 MODEL_NAME = "llama3.1:8b"
@@ -17,29 +18,37 @@ def load_resources() -> list[dict[str, str]]:
         return list(csv.DictReader(file_handle))
 
 def query_ollama(resources: list[dict[str, str]]) -> str:
-    prompt = f"""You are a conservative FinOps analyst. Analyse this cloud resource inventory:
-{json.dumps(resources, indent=2)}
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                "You are a conservative FinOps analyst. Provide practical, "
+                "low-risk cloud cost optimisation advice.",
+            ),
+            (
+                "human",
+                """Analyse this cloud resource inventory:
+{resources}
+
 Identify sensible cost-optimisation opportunities. Do not recommend changes to
-policy-locked resources. Think of the trade-offs as you would when
-advising a team: focus on practical, low-risk changes that are worth making.
-For each recommendation, explain what should change, why it would help, and
-the likely monthly saving where it can be estimated. Return valid JSON with a
-recommendations array and a short, clear summary.
-"""
-    response = requests.post(
-        f"{OLLAMA_HOST}/api/generate",
-        json={"model": MODEL_NAME, "prompt": prompt, "stream": False},
-        timeout=180,
+policy-locked resources. Think of the trade-offs as you would when advising a
+team: focus on practical, low-risk changes that are worth making. For each
+recommendation, explain what should change, why it would help, and the likely
+monthly saving where it can be estimated. Return valid JSON with a
+recommendations array and a short, clear summary.""",
+            ),
+        ]
     )
-    response.raise_for_status()
-    return response.json()["response"]
+    llm = ChatOllama(model=MODEL_NAME, base_url=OLLAMA_HOST, temperature=0)
+    response = (prompt | llm).invoke({"resources": json.dumps(resources, indent=2)})
+    return str(response.content)
 
 
 def main() -> None:
     
     try:
         response = query_ollama(load_resources())
-    except requests.exceptions.RequestException as error:
+    except Exception as error:
         print(f"Ollama generation failed: {error}")
         sys.exit(1)
 
