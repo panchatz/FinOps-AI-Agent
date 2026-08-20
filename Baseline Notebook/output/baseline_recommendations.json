@@ -1,0 +1,77 @@
+{
+  "summary": "Low-risk cost optimisation opportunities identified",
+  "recommendations": [
+    {
+      "resource_id": "vm-prod-01",
+      "team": "core-platform",
+      "environment": "prod",
+      "service": "vm",
+      "monthly_cost": "420.00",
+      "cpu_utilization": "18",
+      "memory_utilization": "31",
+      "uptime_required": "24x7",
+      "policy_locked": "false",
+      "schedule_eligible": "false",
+      "storage_tier_eligible": "false",
+      "suggested_change": {
+        "rightsize_instance_type": true,
+        "estimated_savings": 75.6
+      },
+      "rationale": "Low utilisation suggests this VM can be safely downsized to reduce cost."
+    },
+    {
+      "resource_id": "vm-dev-01",
+      "team": "analytics",
+      "environment": "dev",
+      "service": "vm",
+      "monthly_cost": "260.00",
+      "cpu_utilization": "12",
+      "memory_utilization": "28",
+      "uptime_required": "business-hours",
+      "policy_locked": "false",
+      "schedule_eligible": "true",
+      "storage_tier_eligible": "false",
+      "suggested_change": {
+        "enable_schedule": true,
+        "estimated_savings": 91.0
+      },
+      "rationale": "This non-production VM can be scheduled around business hours to cut idle-time spend."
+    },
+    {
+      "resource_id": "vm-test-01",
+      "team": "marketing",
+      "environment": "test",
+      "service": "vm",
+      "monthly_cost": "180.00",
+      "cpu_utilization": "16",
+      "memory_utilization": "24",
+      "uptime_required": "business-hours",
+      "policy_locked": "false",
+      "schedule_eligible": "true",
+      "storage_tier_eligible": "false",
+      "suggested_change": {
+        "enable_schedule": true,
+        "estimated_savings": 63.0
+      },
+      "rationale": "This non-production VM can be scheduled around business hours to cut idle-time spend."
+    },
+    {
+      "resource_id": "storage-01",
+      "team": "data-eng",
+      "environment": "prod",
+      "service": "storage",
+      "monthly_cost": "190.00",
+      "cpu_utilization": "0",
+      "memory_utilization": "0",
+      "uptime_required": "24x7",
+      "policy_locked": "false",
+      "schedule_eligible": "false",
+      "storage_tier_eligible": "true",
+      "suggested_change": {
+        "tier_storage_downgrade": true,
+        "estimated_savings": 41.8
+      },
+      "rationale": "This storage resource is eligible for a lower-cost tier with limited operational risk."
+    }
+  ]
+}
