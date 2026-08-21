@@ -16,8 +16,7 @@
       "suggested_change": {
         "rightsize_instance_type": true,
         "estimated_savings": 75.6
-      },
-      "rationale": "Low utilisation suggests this VM can be safely downsized to reduce cost."
+      }
     },
     {
       "resource_id": "vm-dev-01",
@@ -34,8 +33,7 @@
       "suggested_change": {
         "enable_schedule": true,
         "estimated_savings": 91.0
-      },
-      "rationale": "This non-production VM can be scheduled around business hours to cut idle-time spend."
+      }
     },
     {
       "resource_id": "vm-test-01",
@@ -52,8 +50,7 @@
       "suggested_change": {
         "enable_schedule": true,
         "estimated_savings": 63.0
-      },
-      "rationale": "This non-production VM can be scheduled around business hours to cut idle-time spend."
+      }
     },
     {
       "resource_id": "storage-01",
@@ -70,8 +67,7 @@
       "suggested_change": {
         "tier_storage_downgrade": true,
         "estimated_savings": 41.8
-      },
-      "rationale": "This storage resource is eligible for a lower-cost tier with limited operational risk."
+      }
     }
   ]
 }
