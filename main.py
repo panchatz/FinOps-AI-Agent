@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import csv
-import json
 import requests
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-DATA_DIR = Path(__file__).parent / "data"
+DATA_DIR = Path(__file__).parent.parent / "data"
 INPUT_FILE = DATA_DIR / "sample_resources.csv"
 OUTPUT_FILE = Path(__file__).parent / "output" / "recommendations.json"
 
@@ -41,7 +40,7 @@ class VerificationResult:
     checks: list[str]
 
 OLLAMA_HOST = "http://localhost:11434"
-MODEL_NAME = "mistral"
+MODEL_NAME = "llama3.1:8b"
 
 def wait_for_ollama(max_retries: int = 30, timeout: int = 2) -> bool:
     for attempt in range(max_retries):

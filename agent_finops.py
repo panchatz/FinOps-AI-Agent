@@ -1,23 +1,27 @@
 from __future__ import annotations
 
-import csv
 import json
 import sys
 from pathlib import Path
+from typing import TypedDict
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama import ChatOllama
+from langgraph.graph import END, START, StateGraph
+
+from main import INPUT_FILE, load_resources
 
 OLLAMA_HOST = "http://localhost:11434"
 MODEL_NAME = "llama3.1:8b"
-DATA_FILE = Path(__file__).parent.parent / "data" / "sample_resources.csv"
 OUTPUT_FILE = Path(__file__).parent / "output" / "agent_test_response.json"
 
-def load_resources() -> list[dict[str, str]]:
-    with DATA_FILE.open("r", encoding="utf-8", newline="") as file_handle:
-        return list(csv.DictReader(file_handle))
 
-def query_ollama(resources: list[dict[str, str]]) -> str:
+class AgentState(TypedDict, total=False):
+    resources: list[dict]
+    response: str
+
+
+def query_ollama(resources: list[dict]) -> str:
     prompt = ChatPromptTemplate.from_messages(
         [
             (
@@ -43,11 +47,29 @@ recommendations array and a short, clear summary.""",
     response = (prompt | llm).invoke({"resources": json.dumps(resources, indent=2)})
     return str(response.content)
 
+def load_inventory(state: AgentState) -> AgentState:
+    resources = [resource.__dict__ for resource in load_resources(INPUT_FILE)]
+    return {"resources": resources}
+
+
+def analyse_inventory(state: AgentState) -> AgentState:
+    return {"response": query_ollama(state["resources"])}
+
+
+def build_graph():
+    workflow = StateGraph(AgentState)
+    workflow.add_node("load_inventory", load_inventory)
+    workflow.add_node("analyse_inventory", analyse_inventory)
+    workflow.add_edge(START, "load_inventory")
+    workflow.add_edge("load_inventory", "analyse_inventory")
+    workflow.add_edge("analyse_inventory", END)
+    return workflow.compile()
+
 
 def main() -> None:
-    
     try:
-        response = query_ollama(load_resources())
+        result = build_graph().invoke({})
+        response = result["response"]
     except Exception as error:
         print(f"Ollama generation failed: {error}")
         sys.exit(1)
