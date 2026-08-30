@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import sys
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -34,6 +35,7 @@ AZURE_CLIENT_SECRET = os.environ.get("AZURE_CLIENT_SECRET", "")
 AZURE_SUBSCRIPTION_ID = os.environ.get("AZURE_SUBSCRIPTION_ID", "")
 OUTPUT_FILE = Path(__file__).parent / "output" / "agent_test_response.json"
 FOCUS_FILE = Path(__file__).parent / "output" / "focus_billed_costs.json"
+DATABASE_FILE = Path(__file__).parent / "output" / "finops_costs.db"
 
 
 class AgentState(TypedDict, total=False):
@@ -42,6 +44,7 @@ class AgentState(TypedDict, total=False):
     credential: Any
     azure_rows: list[dict]
     focus_records: list[dict]
+    database_path: str
 
 
 def query_ollama(resources: list[dict]) -> str:
@@ -150,6 +153,51 @@ def format_focus_data(state: AgentState) -> AgentState:
 
     return {"focus_records": focus_records}
 
+
+def store_focus_data(state: AgentState) -> AgentState:
+    DATABASE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(DATABASE_FILE) as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS focus_costs (
+                id INTEGER PRIMARY KEY,
+                billed_cost REAL NOT NULL,
+                effective_cost REAL NOT NULL,
+                charge_period_start TEXT,
+                charge_category TEXT NOT NULL,
+                provider_name TEXT NOT NULL,
+                publisher_name TEXT NOT NULL,
+                service_name TEXT NOT NULL,
+                resource_id TEXT NOT NULL,
+                subscription_id TEXT NOT NULL
+            )
+            """
+        )
+        connection.executemany(
+            """
+            INSERT INTO focus_costs (
+                billed_cost, effective_cost, charge_period_start, charge_category,
+                provider_name, publisher_name, service_name, resource_id, subscription_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    record["BilledCost"],
+                    record["EffectiveCost"],
+                    record["ChargePeriodStart"],
+                    record["ChargeCategory"],
+                    record["ProviderName"],
+                    record["PublisherName"],
+                    record["ServiceName"],
+                    record["ResourceID"],
+                    record["SubscriptionID"],
+                )
+                for record in state["focus_records"]
+            ],
+        )
+    return {"database_path": str(DATABASE_FILE)}
+
+
 def build_graph():
     workflow = StateGraph(AgentState)
     workflow.add_node("load_inventory", load_inventory)
@@ -157,12 +205,14 @@ def build_graph():
     workflow.add_node("authenticate_service_principal", authenticate_service_principal)
     workflow.add_node("fetch_azure_costs", fetch_azure_costs)
     workflow.add_node("format_focus_data", format_focus_data)
+    workflow.add_node("store_focus_data", store_focus_data)
     workflow.add_edge(START, "load_inventory")
     workflow.add_edge("load_inventory", "analyse_inventory")
     workflow.add_edge("analyse_inventory", "authenticate_service_principal")
     workflow.add_edge("authenticate_service_principal", "fetch_azure_costs")
     workflow.add_edge("fetch_azure_costs", "format_focus_data")
-    workflow.add_edge("format_focus_data", END)
+    workflow.add_edge("format_focus_data", "store_focus_data")
+    workflow.add_edge("store_focus_data", END)
     return workflow.compile()
 
 
@@ -179,6 +229,7 @@ def main() -> None:
     OUTPUT_FILE.write_text(response, encoding="utf-8")
     print(f"\nResponse saved to {OUTPUT_FILE}")
     print(f"FOCUS data saved to {FOCUS_FILE}")
+    print(f"FOCUS records stored in {result['database_path']}")
     
 
 if __name__ == "__main__":
