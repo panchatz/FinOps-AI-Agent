@@ -38,12 +38,14 @@ class AgentState(TypedDict, total=False):
     azure_rows: list[dict]
     focus_records: list[dict]
     database_path: str
+    historical_records: list[dict]
     inserted_records: int
     skipped_records: int
 
 def query_ollama(
     resources: list[dict],
     focus_records: list[dict],
+    historical_records: list[dict],
     database_path: str,
 ) -> str:
     prompt = ChatPromptTemplate.from_messages(
@@ -60,6 +62,9 @@ def query_ollama(
 
 FOCUS-formatted Azure records:
 {focus_records}
+
+Historical FOCUS records from previous months:
+{historical_records}
 
 Historical data is stored in SQLite at:
 {database_path}
@@ -80,6 +85,7 @@ the corresponding information in the database.""",
         {
             "resources": json.dumps(resources, indent=2),
             "focus_records": json.dumps(focus_records, indent=2),
+            "historical_records": json.dumps(historical_records, indent=2),
             "database_path": database_path,
         }
     )
@@ -95,15 +101,17 @@ def analyse_inventory(state: AgentState) -> AgentState:
         "response": query_ollama(
             state["resources"],
             state["focus_records"],
+            state["historical_records"],
             state["database_path"],
         )
     }
 
-
+# Authenticate with Azure Entra ID using a service principal
 def authenticate_service_principal(state: AgentState) -> AgentState:
     credential = ClientSecretCredential(tenant_id=AZURE_TENANT_ID,client_id=AZURE_CLIENT_ID,client_secret=AZURE_CLIENT_SECRET,)
     return {"credential": credential}
 
+# Gather Azure cost data using the Azure Cost Management API
 def gather_azure_costs(state: AgentState) -> AgentState:
     if not AZURE_SUBSCRIPTION_ID:
         raise RuntimeError("AZURE_SUBSCRIPTION_ID is not set; cannot query the Azure tenant.")
@@ -217,6 +225,35 @@ def store_focus_data(state: AgentState) -> AgentState:
         "skipped_records": skipped_records,
     }
 
+# Query historical cost data from the database
+def query_historical_data(state: AgentState) -> AgentState:
+    current_month = datetime.now(timezone.utc).replace(day=1).strftime("%Y-%m-%d")
+    history_start = (datetime.now(timezone.utc) - timedelta(days=180)).strftime("%Y-%m-%d")
+
+    with sqlite3.connect(DATABASE_FILE) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            """
+            SELECT billed_cost,
+                   effective_cost,
+                   charge_period_start,
+                   charge_category,
+                   provider_name,
+                   publisher_name,
+                   service_name,
+                   resource_id,
+                   subscription_id
+            FROM focus_costs
+            WHERE subscription_id = ?
+              AND charge_period_start >= ?
+              AND charge_period_start < ?
+            ORDER BY charge_period_start, resource_id
+            """,
+            (AZURE_SUBSCRIPTION_ID, history_start, current_month),
+        ).fetchall()
+
+    return {"historical_records": [dict(row) for row in rows]}
+
 
 def build_graph():
     workflow = StateGraph(AgentState)
@@ -226,12 +263,14 @@ def build_graph():
     workflow.add_node("gather_azure_costs", gather_azure_costs)
     workflow.add_node("format_focus_data", format_focus_data)
     workflow.add_node("store_focus_data", store_focus_data)
+    workflow.add_node("query_historical_data", query_historical_data)
     workflow.add_edge(START, "load_inventory")
     workflow.add_edge("load_inventory", "authenticate_service_principal")
     workflow.add_edge("authenticate_service_principal", "gather_azure_costs")
     workflow.add_edge("gather_azure_costs", "format_focus_data")
     workflow.add_edge("format_focus_data", "store_focus_data")
-    workflow.add_edge("store_focus_data", "analyse_inventory")
+    workflow.add_edge("store_focus_data", "query_historical_data")
+    workflow.add_edge("query_historical_data", "analyse_inventory")
     workflow.add_edge("analyse_inventory", END)
     return workflow.compile()
 
