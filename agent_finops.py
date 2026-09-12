@@ -11,13 +11,7 @@ from typing import Any, TypedDict
 
 from azure.identity import ClientSecretCredential
 from azure.mgmt.costmanagement import CostManagementClient
-from azure.mgmt.costmanagement.models import (
-    QueryAggregation,
-    QueryDataset,
-    QueryDefinition,
-    QueryGrouping,
-    QueryTimePeriod,
-)
+from azure.mgmt.costmanagement.models import (QueryAggregation,QueryDataset,QueryDefinition,QueryGrouping,QueryTimePeriod,)
 from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama import ChatOllama
@@ -37,7 +31,6 @@ OUTPUT_FILE = Path(__file__).parent / "output" / "agent_test_response.json"
 FOCUS_FILE = Path(__file__).parent / "output" / "focus_billed_costs.json"
 DATABASE_FILE = Path(__file__).parent / "output" / "finops_costs.db"
 
-
 class AgentState(TypedDict, total=False):
     resources: list[dict]
     response: str
@@ -46,8 +39,11 @@ class AgentState(TypedDict, total=False):
     focus_records: list[dict]
     database_path: str
 
-
-def query_ollama(resources: list[dict]) -> str:
+def query_ollama(
+    resources: list[dict],
+    focus_records: list[dict],
+    database_path: str,
+) -> str:
     prompt = ChatPromptTemplate.from_messages(
         [
             (
@@ -57,20 +53,34 @@ def query_ollama(resources: list[dict]) -> str:
             ),
             (
                 "human",
-                """Analyse this cloud resource inventory:
+                """Analyse this cloud resource inventory and Azure cost data:
 {resources}
+
+FOCUS-formatted Azure records:
+{focus_records}
+
+Historical data is stored in SQLite at:
+{database_path}
 
 Identify sensible cost-optimisation opportunities. Do not recommend changes to
 policy-locked resources. Think of the trade-offs as you would when advising a
 team: focus on practical, low-risk changes that are worth making. For each
 recommendation, explain what should change, why it would help, and the likely
 monthly saving where it can be estimated. Return valid JSON with a
-recommendations array and a short, clear summary.""",
+recommendations array and a short, clear summary. Take into consideration each 
+resource's monthly cost, CPU and memory utilisation, uptime requirements and all 
+the corresponding information in the database.""",
             ),
         ]
     )
     llm = ChatOllama(model=MODEL_NAME, base_url=OLLAMA_HOST, temperature=0)
-    response = (prompt | llm).invoke({"resources": json.dumps(resources, indent=2)})
+    response = (prompt | llm).invoke(
+        {
+            "resources": json.dumps(resources, indent=2),
+            "focus_records": json.dumps(focus_records, indent=2),
+            "database_path": database_path,
+        }
+    )
     return str(response.content)
 
 def load_inventory(state: AgentState) -> AgentState:
@@ -79,31 +89,20 @@ def load_inventory(state: AgentState) -> AgentState:
 
 
 def analyse_inventory(state: AgentState) -> AgentState:
-    return {"response": query_ollama(state["resources"])}
+    return {
+        "response": query_ollama(
+            state["resources"],
+            state["focus_records"],
+            state["database_path"],
+        )
+    }
 
 
 def authenticate_service_principal(state: AgentState) -> AgentState:
-    missing = [
-        name
-        for name, value in (
-            ("AZURE_TENANT_ID", AZURE_TENANT_ID),
-            ("AZURE_CLIENT_ID", AZURE_CLIENT_ID),
-            ("AZURE_CLIENT_SECRET", AZURE_CLIENT_SECRET),
-        )
-        if not value
-    ]
-    if missing:
-        raise RuntimeError(f"Missing service principal credentials in .env: {', '.join(missing)}")
-
-    credential = ClientSecretCredential(
-        tenant_id=AZURE_TENANT_ID,
-        client_id=AZURE_CLIENT_ID,
-        client_secret=AZURE_CLIENT_SECRET,
-    )
+    credential = ClientSecretCredential(tenant_id=AZURE_TENANT_ID,client_id=AZURE_CLIENT_ID,client_secret=AZURE_CLIENT_SECRET,)
     return {"credential": credential}
 
-
-def fetch_azure_costs(state: AgentState) -> AgentState:
+def gather_azure_costs(state: AgentState) -> AgentState:
     if not AZURE_SUBSCRIPTION_ID:
         raise RuntimeError("AZURE_SUBSCRIPTION_ID is not set; cannot query the Azure tenant.")
 
@@ -203,16 +202,16 @@ def build_graph():
     workflow.add_node("load_inventory", load_inventory)
     workflow.add_node("analyse_inventory", analyse_inventory)
     workflow.add_node("authenticate_service_principal", authenticate_service_principal)
-    workflow.add_node("fetch_azure_costs", fetch_azure_costs)
+    workflow.add_node("gather_azure_costs", gather_azure_costs)
     workflow.add_node("format_focus_data", format_focus_data)
     workflow.add_node("store_focus_data", store_focus_data)
     workflow.add_edge(START, "load_inventory")
-    workflow.add_edge("load_inventory", "analyse_inventory")
-    workflow.add_edge("analyse_inventory", "authenticate_service_principal")
-    workflow.add_edge("authenticate_service_principal", "fetch_azure_costs")
-    workflow.add_edge("fetch_azure_costs", "format_focus_data")
+    workflow.add_edge("load_inventory", "authenticate_service_principal")
+    workflow.add_edge("authenticate_service_principal", "gather_azure_costs")
+    workflow.add_edge("gather_azure_costs", "format_focus_data")
     workflow.add_edge("format_focus_data", "store_focus_data")
-    workflow.add_edge("store_focus_data", END)
+    workflow.add_edge("store_focus_data", "analyse_inventory")
+    workflow.add_edge("analyse_inventory", END)
     return workflow.compile()
 
 
