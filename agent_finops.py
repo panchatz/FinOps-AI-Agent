@@ -38,6 +38,8 @@ class AgentState(TypedDict, total=False):
     azure_rows: list[dict]
     focus_records: list[dict]
     database_path: str
+    inserted_records: int
+    skipped_records: int
 
 def query_ollama(
     resources: list[dict],
@@ -155,6 +157,8 @@ def format_focus_data(state: AgentState) -> AgentState:
 
 def store_focus_data(state: AgentState) -> AgentState:
     DATABASE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    inserted_records = 0
+    skipped_records = 0
     with sqlite3.connect(DATABASE_FILE) as connection:
         connection.execute(
             """
@@ -172,29 +176,46 @@ def store_focus_data(state: AgentState) -> AgentState:
             )
             """
         )
-        connection.executemany(
-            """
-            INSERT INTO focus_costs (
-                billed_cost, effective_cost, charge_period_start, charge_category,
-                provider_name, publisher_name, service_name, resource_id, subscription_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                (
-                    record["BilledCost"],
-                    record["EffectiveCost"],
-                    record["ChargePeriodStart"],
-                    record["ChargeCategory"],
-                    record["ProviderName"],
-                    record["PublisherName"],
-                    record["ServiceName"],
-                    record["ResourceID"],
-                    record["SubscriptionID"],
+        # Insert each focus record into the database while checking for duplicates
+        for record in state["focus_records"]:
+            values = (
+                record["BilledCost"],
+                record["EffectiveCost"],
+                record["ChargePeriodStart"],
+                record["ChargeCategory"],
+                record["ProviderName"],
+                record["PublisherName"],
+                record["ServiceName"],
+                record["ResourceID"],
+                record["SubscriptionID"],
+            )
+            connection.execute(
+                """
+                INSERT INTO focus_costs (
+                    billed_cost, effective_cost, charge_period_start, charge_category,
+                    provider_name, publisher_name, service_name, resource_id, subscription_id
                 )
-                for record in state["focus_records"]
-            ],
-        )
-    return {"database_path": str(DATABASE_FILE)}
+                SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM focus_costs
+                    WHERE subscription_id = ?
+                      AND resource_id = ?
+                      AND charge_period_start IS ?
+                      AND charge_category = ?
+                )
+                """,
+                (*values, record["SubscriptionID"], record["ResourceID"],
+                 record["ChargePeriodStart"], record["ChargeCategory"]),
+            )
+            if connection.execute("SELECT changes()").fetchone()[0]:
+                inserted_records += 1
+            else:
+                skipped_records += 1
+    return {
+        "database_path": str(DATABASE_FILE),
+        "inserted_records": inserted_records,
+        "skipped_records": skipped_records,
+    }
 
 
 def build_graph():
@@ -229,6 +250,8 @@ def main() -> None:
     print(f"\nResponse saved to {OUTPUT_FILE}")
     print(f"FOCUS data saved to {FOCUS_FILE}")
     print(f"FOCUS records stored in {result['database_path']}")
+    print(f"SQLite records inserted: {result['inserted_records']}")
+    print(f"SQLite records skipped: {result['skipped_records']}")
     
 
 if __name__ == "__main__":
