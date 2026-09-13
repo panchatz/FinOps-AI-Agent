@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama import ChatOllama
 from langgraph.graph import END, START, StateGraph
+from pydantic import BaseModel, Field, ValidationError
 
 from main import INPUT_FILE, load_resources
 
@@ -41,6 +42,19 @@ class AgentState(TypedDict, total=False):
     historical_records: list[dict]
     inserted_records: int
     skipped_records: int
+
+
+# FOCUS v1.0 (FinOps Open Cost and Usage Specification) record schema.
+class FocusRecord(BaseModel):
+    BilledCost: float = Field(ge=0)
+    EffectiveCost: float = Field(ge=0)
+    ChargePeriodStart: str | None
+    ChargeCategory: str
+    ProviderName: str
+    PublisherName: str
+    ServiceName: str
+    ResourceID: str
+    SubscriptionID: str
 
 def query_ollama(
     resources: list[dict],
@@ -142,8 +156,9 @@ def gather_azure_costs(state: AgentState) -> AgentState:
 
 def format_focus_data(state: AgentState) -> AgentState:
     # Maps Azure Cost Management rows onto the FOCUS v1.0 (FinOps Open Cost and Usage Specification) schema.
-    focus_records = [
-        {
+    validated_records = []
+    for row in state["azure_rows"]:
+        candidate = {
             "BilledCost": row.get("PreTaxCost", 0.0),
             "EffectiveCost": row.get("PreTaxCost", 0.0),
             "ChargePeriodStart": row.get("UsageDate"),
@@ -154,13 +169,15 @@ def format_focus_data(state: AgentState) -> AgentState:
             "ResourceID": row.get("ResourceId", "N/A"),
             "SubscriptionID": AZURE_SUBSCRIPTION_ID,
         }
-        for row in state["azure_rows"]
-    ]
+        try:
+            validated_records.append(FocusRecord(**candidate).model_dump())
+        except ValidationError as error:
+            raise ValueError(f"Invalid FOCUS record for row {row}: {error}") from error
 
     FOCUS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    FOCUS_FILE.write_text(json.dumps(focus_records, indent=2), encoding="utf-8")
+    FOCUS_FILE.write_text(json.dumps(validated_records, indent=2), encoding="utf-8")
 
-    return {"focus_records": focus_records}
+    return {"focus_records": validated_records}
 
 
 def store_focus_data(state: AgentState) -> AgentState:
@@ -252,7 +269,14 @@ def query_historical_data(state: AgentState) -> AgentState:
             (AZURE_SUBSCRIPTION_ID, history_start, current_month),
         ).fetchall()
 
-    return {"historical_records": [dict(row) for row in rows]}
+    validated_records = []
+    for row in rows:
+        try:
+            validated_records.append(FocusRecord(**dict(row)).model_dump())
+        except ValidationError as error:
+            raise ValueError(f"Invalid historical FOCUS record {dict(row)}: {error}") from error
+
+    return {"historical_records": validated_records}
 
 
 def build_graph():
@@ -275,7 +299,7 @@ def build_graph():
     return workflow.compile()
 
 
-def main() -> None:
+def main() -> None: 
     try:
         result = build_graph().invoke({})
         response = result["response"]

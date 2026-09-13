@@ -1,4 +1,7 @@
 __pycache__/
 *.py[codz]
 .env
-output/*
+.env.*
+!.env.example
+output/
+.ipynb_checkpoints/
