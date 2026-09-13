@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import sys
+import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -31,6 +32,8 @@ AZURE_SUBSCRIPTION_ID = os.environ.get("AZURE_SUBSCRIPTION_ID", "")
 OUTPUT_FILE = Path(__file__).parent / "output" / "agent_test_response.json"
 FOCUS_FILE = Path(__file__).parent / "output" / "focus_billed_costs.json"
 DATABASE_FILE = Path(__file__).parent / "output" / "finops_costs.db"
+MAX_EMPTY_RESULT_RETRIES = 2
+RETRY_DELAY_SECONDS = 2
 
 class AgentState(TypedDict, total=False):
     resources: list[dict]
@@ -42,6 +45,8 @@ class AgentState(TypedDict, total=False):
     historical_records: list[dict]
     inserted_records: int
     skipped_records: int
+    azure_error: str
+    retry_count: int
 
 
 # FOCUS v1.0 (FinOps Open Cost and Usage Specification) record schema.
@@ -105,11 +110,12 @@ the corresponding information in the database.""",
     )
     return str(response.content)
 
+# Load the resource inventory from the input file
 def load_inventory(state: AgentState) -> AgentState:
     resources = [resource.__dict__ for resource in load_resources(INPUT_FILE)]
     return {"resources": resources}
 
-
+# Analyse the resource inventory and Azure cost data using the LLM
 def analyse_inventory(state: AgentState) -> AgentState:
     return {
         "response": query_ollama(
@@ -128,9 +134,8 @@ def authenticate_service_principal(state: AgentState) -> AgentState:
 # Gather Azure cost data using the Azure Cost Management API
 def gather_azure_costs(state: AgentState) -> AgentState:
     if not AZURE_SUBSCRIPTION_ID:
-        raise RuntimeError("AZURE_SUBSCRIPTION_ID is not set; cannot query the Azure tenant.")
+        return {"azure_rows": [], "azure_error": "AZURE_SUBSCRIPTION_ID is not set; cannot query the Azure tenant."}
 
-    client = CostManagementClient(state["credential"])
     scope = f"/subscriptions/{AZURE_SUBSCRIPTION_ID}"
     now = datetime.now(timezone.utc)
 
@@ -148,10 +153,46 @@ def gather_azure_costs(state: AgentState) -> AgentState:
         ),
     )
 
-    result = client.query.usage(scope, query)
+    try:
+        client = CostManagementClient(state["credential"])
+        result = client.query.usage(scope, query)
+    except Exception as error:
+        return {"azure_rows": [], "azure_error": f"Azure Cost Management query failed: {error}"}
+
     columns = [column.name for column in result.columns]
     azure_rows = [dict(zip(columns, row)) for row in result.rows]
     return {"azure_rows": azure_rows}
+
+
+# Route after gather_azure_costs based on whether the query failed or returned no data.
+def route_after_gather_azure_costs(state: AgentState) -> str:
+    if state.get("azure_error"):
+        return "handle_azure_failure"
+    if not state["azure_rows"]:
+        if state.get("retry_count", 0) < MAX_EMPTY_RESULT_RETRIES:
+            return "retry_gather_azure_costs"
+        return "handle_empty_cost_data"
+    return "format_focus_data"
+
+
+# Branch: retry the Azure query after an empty result, waiting briefly before each attempt.
+def retry_gather_azure_costs(state: AgentState) -> AgentState:
+    retry_count = state.get("retry_count", 0) + 1
+    print(f"No cost data returned; retrying Azure query (attempt {retry_count} of {MAX_EMPTY_RESULT_RETRIES})...")
+    time.sleep(RETRY_DELAY_SECONDS)
+    return {"retry_count": retry_count}
+
+
+# Branch: Azure Cost Management query failed. Continue with an empty cost dataset.
+def handle_azure_failure(state: AgentState) -> AgentState:
+    print(f"Azure query failure: {state['azure_error']}")
+    return {"focus_records": [], "historical_records": [], "database_path": ""}
+
+
+# Branch: Azure Cost Management query succeeded but returned no rows after all retries.
+def handle_empty_cost_data(state: AgentState) -> AgentState:
+    print("Azure Cost Management returned no cost data after all retry attempts.")
+    return {"focus_records": [], "historical_records": [], "database_path": ""}
 
 
 def format_focus_data(state: AgentState) -> AgentState:
@@ -251,15 +292,15 @@ def query_historical_data(state: AgentState) -> AgentState:
         connection.row_factory = sqlite3.Row
         rows = connection.execute(
             """
-            SELECT billed_cost,
-                   effective_cost,
-                   charge_period_start,
-                   charge_category,
-                   provider_name,
-                   publisher_name,
-                   service_name,
-                   resource_id,
-                   subscription_id
+            SELECT billed_cost AS BilledCost,
+                   effective_cost AS EffectiveCost,
+                   charge_period_start AS ChargePeriodStart,
+                   charge_category AS ChargeCategory,
+                   provider_name AS ProviderName,
+                   publisher_name AS PublisherName,
+                   service_name AS ServiceName,
+                   resource_id AS ResourceID,
+                   subscription_id AS SubscriptionID
             FROM focus_costs
             WHERE subscription_id = ?
               AND charge_period_start >= ?
@@ -285,13 +326,28 @@ def build_graph():
     workflow.add_node("analyse_inventory", analyse_inventory)
     workflow.add_node("authenticate_service_principal", authenticate_service_principal)
     workflow.add_node("gather_azure_costs", gather_azure_costs)
+    workflow.add_node("retry_gather_azure_costs", retry_gather_azure_costs)
+    workflow.add_node("handle_azure_failure", handle_azure_failure)
+    workflow.add_node("handle_empty_cost_data", handle_empty_cost_data)
     workflow.add_node("format_focus_data", format_focus_data)
     workflow.add_node("store_focus_data", store_focus_data)
     workflow.add_node("query_historical_data", query_historical_data)
     workflow.add_edge(START, "load_inventory")
     workflow.add_edge("load_inventory", "authenticate_service_principal")
     workflow.add_edge("authenticate_service_principal", "gather_azure_costs")
-    workflow.add_edge("gather_azure_costs", "format_focus_data")
+    workflow.add_conditional_edges(
+        "gather_azure_costs",
+        route_after_gather_azure_costs,
+        {
+            "handle_azure_failure": "handle_azure_failure",
+            "retry_gather_azure_costs": "retry_gather_azure_costs",
+            "handle_empty_cost_data": "handle_empty_cost_data",
+            "format_focus_data": "format_focus_data",
+        },
+    )
+    workflow.add_edge("retry_gather_azure_costs", "gather_azure_costs")
+    workflow.add_edge("handle_azure_failure", "analyse_inventory")
+    workflow.add_edge("handle_empty_cost_data", "analyse_inventory")
     workflow.add_edge("format_focus_data", "store_focus_data")
     workflow.add_edge("store_focus_data", "query_historical_data")
     workflow.add_edge("query_historical_data", "analyse_inventory")
