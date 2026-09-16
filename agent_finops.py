@@ -5,7 +5,6 @@ import os
 import sqlite3
 import sys
 import time
-from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, TypedDict
@@ -47,6 +46,9 @@ class AgentState(TypedDict, total=False):
     skipped_records: int
     azure_error: str
     retry_count: int
+    recommendations: list[dict]
+    approved_recommendations: list[dict]
+    rejected_recommendations: list[dict]
 
 
 # FOCUS v1.0 (FinOps Open Cost and Usage Specification) record schema.
@@ -60,6 +62,24 @@ class FocusRecord(BaseModel):
     ServiceName: str
     ResourceID: str
     SubscriptionID: str
+
+
+def validate_focus_records(records: list[dict]) -> list[dict]:
+    try:
+        return [FocusRecord(**record).model_dump() for record in records]
+    except ValidationError as error:
+        raise ValueError(f"Invalid FOCUS record: {error}") from error
+
+
+def empty_cost_data_state() -> AgentState:
+    return {
+        "focus_records": [],
+        "historical_records": [],
+        "database_path": "",
+        "inserted_records": 0,
+        "skipped_records": 0,
+    }
+
 
 def query_ollama(
     resources: list[dict],
@@ -95,7 +115,9 @@ recommendation, explain what should change, why it would help, and the likely
 monthly saving where it can be estimated. Return valid JSON with a
 recommendations array and a short, clear summary. Take into consideration each 
 resource's monthly cost, CPU and memory utilisation, uptime requirements and all 
-the corresponding information in the database.""",
+the corresponding information in the database. Each recommendation must include
+resource_id, action (rightsize_vm, schedule_shutdown, or move_to_cool_tier),
+estimated_monthly_saving, and reason. Return JSON only.""",
             ),
         ]
     )
@@ -125,6 +147,79 @@ def analyse_inventory(state: AgentState) -> AgentState:
             state["database_path"],
         )
     }
+
+# Parse the LLM output to extract recommendations
+def parse_llm_output(state: AgentState) -> AgentState:
+    response = state["response"]
+    start = response.find("{")
+    if start == -1:
+        raise ValueError("The LLM response does not contain a JSON object.")
+
+    payload = json.JSONDecoder().raw_decode(response[start:])[0]
+    recommendations = payload.get("recommendations")
+    if not isinstance(recommendations, list):
+        raise ValueError("The LLM response does not contain a recommendations array.")
+    return {"recommendations": recommendations}
+
+# Validate policy constraints for the recommended actions
+def validate_policy_constraints(state: AgentState) -> AgentState:
+    resources = {resource["resource_id"]: resource for resource in state["resources"]}
+    approved = []
+    rejected = []
+
+    for recommendation in state["recommendations"]:
+        resource_id = recommendation.get("resource_id")
+        action = recommendation.get("action")
+        resource = resources.get(resource_id)
+        violations = []
+
+        if resource is None:
+            violations.append("Resource is not present in the approved inventory.")
+        else:
+            if resource["policy_locked"]:
+                violations.append("Resource is policy-locked.")
+            if action == "schedule_shutdown":
+                if resource["service"] != "vm":
+                    violations.append("Shutdown scheduling applies only to VMs.")
+                if resource["environment"] == "prod":
+                    violations.append("Production resources cannot be scheduled for shutdown.")
+                if resource["uptime_required"] == "24x7":
+                    violations.append("24x7 resources cannot be scheduled for shutdown.")
+                if not resource["schedule_eligible"]:
+                    violations.append("Resource is not schedule-eligible.")
+            elif action == "rightsize_vm":
+                if resource["service"] != "vm":
+                    violations.append("Rightsizing applies only to VMs.")
+                if resource["cpu_utilization"] >= 25 or resource["memory_utilization"] >= 40:
+                    violations.append("Resource does not meet the low-utilisation threshold.")
+            elif action == "move_to_cool_tier":
+                if resource["service"] != "storage":
+                    violations.append("Storage tiering applies only to storage resources.")
+                if not resource["storage_tier_eligible"]:
+                    violations.append("Resource is not storage-tier eligible.")
+            else:
+                violations.append("Action is not an approved FinOps action.")
+
+        audited_recommendation = {**recommendation, "policy_violations": violations}
+        if violations:
+            rejected.append({**audited_recommendation, "status": "rejected"})
+        else:
+            approved.append({**audited_recommendation, "status": "approved"})
+
+    return {
+        "approved_recommendations": approved,
+        "rejected_recommendations": rejected,
+    }
+
+# Save the audited report to a JSON file
+def save_audited_report(state: AgentState) -> AgentState:
+    report = {
+        "approved_recommendations": state["approved_recommendations"],
+        "rejected_recommendations": state["rejected_recommendations"],
+    }
+    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    OUTPUT_FILE.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return {}
 
 # Authenticate with Azure Entra ID using a service principal
 def authenticate_service_principal(state: AgentState) -> AgentState:
@@ -183,23 +278,21 @@ def retry_gather_azure_costs(state: AgentState) -> AgentState:
     return {"retry_count": retry_count}
 
 
-# Branch: Azure Cost Management query failed. Continue with an empty cost dataset.
+
 def handle_azure_failure(state: AgentState) -> AgentState:
     print(f"Azure query failure: {state['azure_error']}")
-    return {"focus_records": [], "historical_records": [], "database_path": ""}
+    return empty_cost_data_state()
 
 
-# Branch: Azure Cost Management query succeeded but returned no rows after all retries.
+
 def handle_empty_cost_data(state: AgentState) -> AgentState:
     print("Azure Cost Management returned no cost data after all retry attempts.")
-    return {"focus_records": [], "historical_records": [], "database_path": ""}
+    return empty_cost_data_state()
 
-
+# Maps Azure Cost Management rows onto the FOCUS v1.0 (FinOps Open Cost and Usage Specification) schema.
 def format_focus_data(state: AgentState) -> AgentState:
-    # Maps Azure Cost Management rows onto the FOCUS v1.0 (FinOps Open Cost and Usage Specification) schema.
-    validated_records = []
-    for row in state["azure_rows"]:
-        candidate = {
+    records = [
+        {
             "BilledCost": row.get("PreTaxCost", 0.0),
             "EffectiveCost": row.get("PreTaxCost", 0.0),
             "ChargePeriodStart": row.get("UsageDate"),
@@ -210,10 +303,9 @@ def format_focus_data(state: AgentState) -> AgentState:
             "ResourceID": row.get("ResourceId", "N/A"),
             "SubscriptionID": AZURE_SUBSCRIPTION_ID,
         }
-        try:
-            validated_records.append(FocusRecord(**candidate).model_dump())
-        except ValidationError as error:
-            raise ValueError(f"Invalid FOCUS record for row {row}: {error}") from error
+        for row in state["azure_rows"]
+    ]
+    validated_records = validate_focus_records(records)
 
     FOCUS_FILE.parent.mkdir(parents=True, exist_ok=True)
     FOCUS_FILE.write_text(json.dumps(validated_records, indent=2), encoding="utf-8")
@@ -310,20 +402,16 @@ def query_historical_data(state: AgentState) -> AgentState:
             (AZURE_SUBSCRIPTION_ID, history_start, current_month),
         ).fetchall()
 
-    validated_records = []
-    for row in rows:
-        try:
-            validated_records.append(FocusRecord(**dict(row)).model_dump())
-        except ValidationError as error:
-            raise ValueError(f"Invalid historical FOCUS record {dict(row)}: {error}") from error
-
-    return {"historical_records": validated_records}
+    return {"historical_records": validate_focus_records([dict(row) for row in rows])}
 
 
 def build_graph():
     workflow = StateGraph(AgentState)
     workflow.add_node("load_inventory", load_inventory)
     workflow.add_node("analyse_inventory", analyse_inventory)
+    workflow.add_node("parse_llm_output", parse_llm_output)
+    workflow.add_node("validate_policy_constraints", validate_policy_constraints)
+    workflow.add_node("save_audited_report", save_audited_report)
     workflow.add_node("authenticate_service_principal", authenticate_service_principal)
     workflow.add_node("gather_azure_costs", gather_azure_costs)
     workflow.add_node("retry_gather_azure_costs", retry_gather_azure_costs)
@@ -351,7 +439,10 @@ def build_graph():
     workflow.add_edge("format_focus_data", "store_focus_data")
     workflow.add_edge("store_focus_data", "query_historical_data")
     workflow.add_edge("query_historical_data", "analyse_inventory")
-    workflow.add_edge("analyse_inventory", END)
+    workflow.add_edge("analyse_inventory", "parse_llm_output")
+    workflow.add_edge("parse_llm_output", "validate_policy_constraints")
+    workflow.add_edge("validate_policy_constraints", "save_audited_report")
+    workflow.add_edge("save_audited_report", END)
     return workflow.compile()
 
 
@@ -364,9 +455,9 @@ def main() -> None:
         sys.exit(1)
 
     print(response)
-    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT_FILE.write_text(response, encoding="utf-8")
-    print(f"\nResponse saved to {OUTPUT_FILE}")
+    print(f"\nAudited recommendations saved to {OUTPUT_FILE}")
+    print(f"Approved recommendations: {len(result['approved_recommendations'])}")
+    print(f"Rejected recommendations: {len(result['rejected_recommendations'])}")
     print(f"FOCUS data saved to {FOCUS_FILE}")
     print(f"FOCUS records stored in {result['database_path']}")
     print(f"SQLite records inserted: {result['inserted_records']}")
