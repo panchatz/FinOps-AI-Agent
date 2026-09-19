@@ -35,7 +35,7 @@ SUPPORTED_SERVICES = {
 }
 OUTPUT_FILE = Path(__file__).parent / "output" / "agent_test_response.json"
 FOCUS_FILE = Path(__file__).parent / "output" / "focus_billed_costs.json"
-DATABASE_FILE = Path(__file__).parent / "output" / "finops_costs.db"
+DATABASE_FILE = Path("output") / "finops_costs.db"
 MAX_EMPTY_RESULT_RETRIES = 2
 RETRY_DELAY_SECONDS = 2
 
@@ -54,6 +54,7 @@ class AgentState(TypedDict, total=False):
     recommendations: list[dict]
     approved_recommendations: list[dict]
     rejected_recommendations: list[dict]
+    human_reviewed_recommendations: list[dict]
 
 
 # FOCUS v1.0 (FinOps Open Cost and Usage Specification) record schema.
@@ -84,6 +85,28 @@ def empty_cost_data_state() -> AgentState:
         "inserted_records": 0,
         "skipped_records": 0,
     }
+
+
+def ensure_database() -> None:
+    """Create the SQLite database and schema if they are missing."""
+    DATABASE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(DATABASE_FILE) as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS focus_costs (
+                id INTEGER PRIMARY KEY,
+                billed_cost REAL NOT NULL,
+                effective_cost REAL NOT NULL,
+                charge_period_start TEXT,
+                charge_category TEXT NOT NULL,
+                provider_name TEXT NOT NULL,
+                publisher_name TEXT NOT NULL,
+                service_name TEXT NOT NULL,
+                resource_id TEXT NOT NULL,
+                subscription_id TEXT NOT NULL
+            )
+            """
+        )
 
 
 def query_ollama(
@@ -166,8 +189,8 @@ def parse_llm_output(state: AgentState) -> AgentState:
         raise ValueError("The LLM response does not contain a recommendations array.")
     return {"recommendations": recommendations}
 
-# Validate policy constraints for the recommended actions
 def validate_policy_constraints(state: AgentState) -> AgentState:
+    """Validate policy constraints for the recommended actions."""
     resources = {resource["resource_id"]: resource for resource in state["resources"]}
     approved = []
     rejected = []
@@ -215,6 +238,37 @@ def validate_policy_constraints(state: AgentState) -> AgentState:
         "approved_recommendations": approved,
         "rejected_recommendations": rejected,
     }
+
+
+def review_rejected_recommendations(state: AgentState) -> AgentState:
+    """Let a human approve or reject recommendations blocked by policy checks."""
+    approved = list(state["approved_recommendations"])
+    reviewed = []
+
+    for recommendation in state["rejected_recommendations"]:
+        print("\nRecommendation requires human review:")
+        print(json.dumps(recommendation, indent=2))
+        decision = input("Approve this recommendation anyway? [y/N]: ").strip().casefold()
+        human_approved = decision in {"y", "yes"}
+        reviewed_recommendation = {
+            **recommendation,
+            "human_review": "approved" if human_approved else "rejected",
+            "status": "approved" if human_approved else "rejected",
+        }
+        reviewed.append(reviewed_recommendation)
+        if human_approved:
+            approved.append(reviewed_recommendation)
+
+    return {
+        "approved_recommendations": approved,
+        "rejected_recommendations": [
+            recommendation
+            for recommendation in reviewed
+            if recommendation["human_review"] == "rejected"
+        ],
+        "human_reviewed_recommendations": reviewed,
+    }
+
 
 # Save the audited report to a JSON file
 def save_audited_report(state: AgentState) -> AgentState:
@@ -324,26 +378,10 @@ def format_focus_data(state: AgentState) -> AgentState:
 
 
 def store_focus_data(state: AgentState) -> AgentState:
-    DATABASE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ensure_database()
     inserted_records = 0
     skipped_records = 0
     with sqlite3.connect(DATABASE_FILE) as connection:
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS focus_costs (
-                id INTEGER PRIMARY KEY,
-                billed_cost REAL NOT NULL,
-                effective_cost REAL NOT NULL,
-                charge_period_start TEXT,
-                charge_category TEXT NOT NULL,
-                provider_name TEXT NOT NULL,
-                publisher_name TEXT NOT NULL,
-                service_name TEXT NOT NULL,
-                resource_id TEXT NOT NULL,
-                subscription_id TEXT NOT NULL
-            )
-            """
-        )
         # Insert each focus record into the database while checking for duplicates
         for record in state["focus_records"]:
             values = (
@@ -390,6 +428,7 @@ def query_historical_data(state: AgentState) -> AgentState:
     current_month = datetime.now(timezone.utc).replace(day=1).strftime("%Y-%m-%d")
     history_start = (datetime.now(timezone.utc) - timedelta(days=180)).strftime("%Y-%m-%d")
 
+    ensure_database()
     with sqlite3.connect(DATABASE_FILE) as connection:
         connection.row_factory = sqlite3.Row
         rows = connection.execute(
@@ -421,6 +460,7 @@ def build_graph():
     workflow.add_node("analyse_inventory", analyse_inventory)
     workflow.add_node("parse_llm_output", parse_llm_output)
     workflow.add_node("validate_policy_constraints", validate_policy_constraints)
+    workflow.add_node("review_rejected_recommendations", review_rejected_recommendations)
     workflow.add_node("save_audited_report", save_audited_report)
     workflow.add_node("authenticate_service_principal", authenticate_service_principal)
     workflow.add_node("gather_azure_costs", gather_azure_costs)
@@ -451,7 +491,8 @@ def build_graph():
     workflow.add_edge("query_historical_data", "analyse_inventory")
     workflow.add_edge("analyse_inventory", "parse_llm_output")
     workflow.add_edge("parse_llm_output", "validate_policy_constraints")
-    workflow.add_edge("validate_policy_constraints", "save_audited_report")
+    workflow.add_edge("validate_policy_constraints", "review_rejected_recommendations")
+    workflow.add_edge("review_rejected_recommendations", "save_audited_report")
     workflow.add_edge("save_audited_report", END)
     return workflow.compile()
 

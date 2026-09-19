@@ -43,7 +43,8 @@
         "Resource is policy-locked.",
         "Resource does not meet the low-utilisation threshold."
       ],
-      "status": "rejected"
+      "status": "rejected",
+      "human_review": "rejected"
     }
   ]
 }
