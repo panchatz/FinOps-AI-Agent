@@ -1,52 +1,49 @@
-Here is a set of cost-optimisation recommendations based on the provided cloud resource inventory:
-
-```json
 {
-  "summary": "Low-risk cost optimisation opportunities identified",
-  "recommendations": [
+  "approved_recommendations": [
     {
       "resource_id": "vm-prod-01",
-      "team": "core-platform",
-      "environment": "prod",
-      "service": "vm",
-      "monthly_cost": 420.0,
-      "cpu_utilization": 18.0,
-      "memory_utilization": 31.0,
-      "uptime_required": "24x7",
-      "policy_locked": false,
-      "schedule_eligible": false,
-      "storage_tier_eligible": false,
-      "suggested_change": {
-        "rightsize_instance_type": true
-      },
-      "why_it_would_help": "The instance type is likely oversized for the current workload. Right-sizing to a more efficient instance type would reduce costs without impacting performance.",
-      "likely_monthly_saving": 50.0
+      "action": "rightsize_vm",
+      "estimated_monthly_saving": 30.0,
+      "reason": "The VM is only utilizing 18% of its CPU and 31% of its memory, indicating it could be right-sized to a smaller instance type.",
+      "policy_violations": [],
+      "status": "approved"
     },
     {
       "resource_id": "vm-dev-01",
-      "team": "analytics",
-      "environment": "dev",
-      "service": "vm",
-      "monthly_cost": 260.0,
-      "cpu_utilization": 12.0,
-      "memory_utilization": 28.0,
-      "uptime_required": "business-hours",
-      "policy_locked": false,
-      "schedule_eligible": true,
-      "storage_tier_eligible": false,
-      "suggested_change": {
-        "enable_schedule": true
-      },
-      "why_it_would_help": "The resource is eligible for scheduling, which would allow it to be powered off during non-business hours. This would significantly reduce costs without impacting the team's ability to work.",
-      "likely_monthly_saving": 120.0
+      "action": "schedule_shutdown",
+      "estimated_monthly_saving": 20.0,
+      "reason": "The VM is only utilized during business hours and has a low CPU and memory utilization, making it a good candidate for scheduled shutdowns.",
+      "policy_violations": [],
+      "status": "approved"
+    },
+    {
+      "resource_id": "vm-test-01",
+      "action": "schedule_shutdown",
+      "estimated_monthly_saving": 15.0,
+      "reason": "The VM is only utilized during business hours and has a low CPU and memory utilization, making it a good candidate for scheduled shutdowns.",
+      "policy_violations": [],
+      "status": "approved"
+    },
+    {
+      "resource_id": "storage-01",
+      "action": "move_to_cool_tier",
+      "estimated_monthly_saving": 10.0,
+      "reason": "The storage is utilized at 100% and has a high cost, making it a good candidate for moving to a cooler storage tier.",
+      "policy_violations": [],
+      "status": "approved"
+    }
+  ],
+  "rejected_recommendations": [
+    {
+      "resource_id": "vm-prod-02",
+      "action": "rightsize_vm",
+      "estimated_monthly_saving": 50.0,
+      "reason": "The VM is utilizing 44% of its CPU and 62% of its memory, indicating it could be right-sized to a smaller instance type.",
+      "policy_violations": [
+        "Resource is policy-locked.",
+        "Resource does not meet the low-utilisation threshold."
+      ],
+      "status": "rejected"
     }
   ]
 }
-```
-
-Summary:
-
-* The `vm-prod-01` instance is likely oversized for its current workload, and right-sizing it could save around $50 per month.
-* The `vm-dev-01` instance can be enabled for scheduling to reduce costs during non-business hours. This change would likely save around $120 per month.
-
-Note that these recommendations are based on the assumption that the team is willing to implement changes that do not impact performance or availability. Additionally, the estimated monthly savings are rough estimates and may vary depending on various factors such as instance type, usage patterns, and pricing models.

@@ -28,6 +28,11 @@ AZURE_TENANT_ID = os.environ.get("AZURE_TENANT_ID", "")
 AZURE_CLIENT_ID = os.environ.get("AZURE_CLIENT_ID", "")
 AZURE_CLIENT_SECRET = os.environ.get("AZURE_CLIENT_SECRET", "")
 AZURE_SUBSCRIPTION_ID = os.environ.get("AZURE_SUBSCRIPTION_ID", "")
+SUPPORTED_SERVICES = {
+    service.strip().casefold()
+    for service in os.environ.get("FINOPS_SERVICES", "Virtual Machines,Storage").split(",")
+    if service.strip()
+}
 OUTPUT_FILE = Path(__file__).parent / "output" / "agent_test_response.json"
 FOCUS_FILE = Path(__file__).parent / "output" / "focus_billed_costs.json"
 DATABASE_FILE = Path(__file__).parent / "output" / "finops_costs.db"
@@ -255,7 +260,12 @@ def gather_azure_costs(state: AgentState) -> AgentState:
         return {"azure_rows": [], "azure_error": f"Azure Cost Management query failed: {error}"}
 
     columns = [column.name for column in result.columns]
-    azure_rows = [dict(zip(columns, row)) for row in result.rows]
+    azure_rows = [
+        dict(zip(columns, row))
+        for row in result.rows
+        if str(dict(zip(columns, row)).get("ServiceName", "")).casefold()
+        in SUPPORTED_SERVICES
+    ]
     return {"azure_rows": azure_rows}
 
 
