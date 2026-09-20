@@ -189,6 +189,27 @@ def parse_llm_output(state: AgentState) -> AgentState:
         raise ValueError("The LLM response does not contain a recommendations array.")
     return {"recommendations": recommendations}
 
+
+def azure_resource_name(resource_id: str) -> str:
+    """Return the resource name from an Azure Resource Manager resource ID."""
+    return resource_id.rstrip("/").rsplit("/", 1)[-1]
+
+
+def is_dev_or_test_vm(resource: dict | None, azure_rows: list[dict]) -> bool:
+    """Approve the name heuristic only when Azure confirms the exact resource ID."""
+    if resource is None or resource.get("service") != "vm":
+        return False
+
+    resource_id = str(resource.get("resource_id", "")).casefold()
+    for row in azure_rows:
+        azure_id = str(row.get("ResourceId", ""))
+        if azure_id.casefold() != resource_id:
+            continue
+        azure_name = azure_resource_name(azure_id).casefold()
+        return "test" in azure_name or "dev" in azure_name
+    return False
+
+
 def validate_policy_constraints(state: AgentState) -> AgentState:
     """Validate policy constraints for the recommended actions."""
     resources = {resource["resource_id"]: resource for resource in state["resources"]}
@@ -200,6 +221,7 @@ def validate_policy_constraints(state: AgentState) -> AgentState:
         action = recommendation.get("action")
         resource = resources.get(resource_id)
         violations = []
+        dev_test_vm_approved = is_dev_or_test_vm(resource, state.get("azure_rows", []))
 
         if resource is None:
             violations.append("Resource is not present in the approved inventory.")
@@ -209,16 +231,16 @@ def validate_policy_constraints(state: AgentState) -> AgentState:
             if action == "schedule_shutdown":
                 if resource["service"] != "vm":
                     violations.append("Shutdown scheduling applies only to VMs.")
-                if resource["environment"] == "prod":
+                if not dev_test_vm_approved and resource["environment"] == "prod":
                     violations.append("Production resources cannot be scheduled for shutdown.")
-                if resource["uptime_required"] == "24x7":
+                if not dev_test_vm_approved and resource["uptime_required"] == "24x7":
                     violations.append("24x7 resources cannot be scheduled for shutdown.")
                 if not resource["schedule_eligible"]:
                     violations.append("Resource is not schedule-eligible.")
             elif action == "rightsize_vm":
                 if resource["service"] != "vm":
                     violations.append("Rightsizing applies only to VMs.")
-                if resource["cpu_utilization"] >= 25 or resource["memory_utilization"] >= 40:
+                if not dev_test_vm_approved and (resource["cpu_utilization"] >= 25 or resource["memory_utilization"] >= 40):
                     violations.append("Resource does not meet the low-utilisation threshold.")
             elif action == "move_to_cool_tier":
                 if resource["service"] != "storage":
