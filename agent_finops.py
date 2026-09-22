@@ -55,6 +55,8 @@ class AgentState(TypedDict, total=False):
     approved_recommendations: list[dict]
     rejected_recommendations: list[dict]
     human_reviewed_recommendations: list[dict]
+    hard_rejected_recommendations: list[dict]
+    reviewable_recommendations: list[dict]
 
 
 # FOCUS v1.0 (FinOps Open Cost and Usage Specification) record schema.
@@ -214,23 +216,25 @@ def validate_policy_constraints(state: AgentState) -> AgentState:
     """Validate policy constraints for the recommended actions."""
     resources = {resource["resource_id"]: resource for resource in state["resources"]}
     approved = []
-    rejected = []
+    hard_rejected = []
+    reviewable = []
 
     for recommendation in state["recommendations"]:
         resource_id = recommendation.get("resource_id")
         action = recommendation.get("action")
         resource = resources.get(resource_id)
         violations = []
+        hard_violations = []
         dev_test_vm_approved = is_dev_or_test_vm(resource, state.get("azure_rows", []))
 
         if resource is None:
-            violations.append("Resource is not present in the approved inventory.")
+            hard_violations.append("Resource is not present in the approved inventory.")
         else:
             if resource["policy_locked"]:
-                violations.append("Resource is policy-locked.")
+                hard_violations.append("Resource is policy-locked.")
             if action == "schedule_shutdown":
                 if resource["service"] != "vm":
-                    violations.append("Shutdown scheduling applies only to VMs.")
+                    hard_violations.append("Shutdown scheduling applies only to VMs.")
                 if not dev_test_vm_approved and resource["environment"] == "prod":
                     violations.append("Production resources cannot be scheduled for shutdown.")
                 if not dev_test_vm_approved and resource["uptime_required"] == "24x7":
@@ -239,35 +243,51 @@ def validate_policy_constraints(state: AgentState) -> AgentState:
                     violations.append("Resource is not schedule-eligible.")
             elif action == "rightsize_vm":
                 if resource["service"] != "vm":
-                    violations.append("Rightsizing applies only to VMs.")
+                    hard_violations.append("Rightsizing applies only to VMs.")
                 if not dev_test_vm_approved and (resource["cpu_utilization"] >= 25 or resource["memory_utilization"] >= 40):
                     violations.append("Resource does not meet the low-utilisation threshold.")
             elif action == "move_to_cool_tier":
                 if resource["service"] != "storage":
-                    violations.append("Storage tiering applies only to storage resources.")
+                    hard_violations.append("Storage tiering applies only to storage resources.")
                 if not resource["storage_tier_eligible"]:
-                    violations.append("Resource is not storage-tier eligible.")
+                    hard_violations.append("Resource is not storage-tier eligible.")
             else:
-                violations.append("Action is not an approved FinOps action.")
+                hard_violations.append("Action is not an approved FinOps action.")
 
-        audited_recommendation = {**recommendation, "policy_violations": violations}
-        if violations:
-            rejected.append({**audited_recommendation, "status": "rejected"})
+        audited_recommendation = {
+            **recommendation,
+            "policy_violations": [*hard_violations, *violations],
+            "hard_policy_violations": hard_violations,
+        }
+        if hard_violations:
+            hard_rejected.append({
+                **audited_recommendation,
+                "status": "blocked",
+                "human_review": "not_permitted",
+            })
+        elif violations:
+            reviewable.append({
+                **audited_recommendation,
+                "status": "requires_human_review",
+            })
         else:
             approved.append({**audited_recommendation, "status": "approved"})
 
     return {
         "approved_recommendations": approved,
-        "rejected_recommendations": rejected,
+        "rejected_recommendations": [*hard_rejected, *reviewable],
+        "hard_rejected_recommendations": hard_rejected,
+        "reviewable_recommendations": reviewable,
     }
 
 
 def review_rejected_recommendations(state: AgentState) -> AgentState:
     """Let a human approve or reject recommendations blocked by policy checks."""
     approved = list(state["approved_recommendations"])
+    hard_rejected = list(state.get("hard_rejected_recommendations", []))
     reviewed = []
 
-    for recommendation in state["rejected_recommendations"]:
+    for recommendation in state.get("reviewable_recommendations", []):
         print("\nRecommendation requires human review:")
         print(json.dumps(recommendation, indent=2))
         decision = input("Approve this recommendation anyway? [y/N]: ").strip().casefold()
@@ -283,7 +303,7 @@ def review_rejected_recommendations(state: AgentState) -> AgentState:
 
     return {
         "approved_recommendations": approved,
-        "rejected_recommendations": [
+        "rejected_recommendations": hard_rejected + [
             recommendation
             for recommendation in reviewed
             if recommendation["human_review"] == "rejected"
@@ -356,7 +376,7 @@ def route_after_gather_azure_costs(state: AgentState) -> str:
     return "format_focus_data"
 
 
-# Branch: retry the Azure query after an empty result, waiting briefly before each attempt.
+# retry the Azure query after an empty result, waiting briefly before each attempt.
 def retry_gather_azure_costs(state: AgentState) -> AgentState:
     retry_count = state.get("retry_count", 0) + 1
     print(f"No cost data returned; retrying Azure query (attempt {retry_count} of {MAX_EMPTY_RESULT_RETRIES})...")
@@ -375,13 +395,25 @@ def handle_empty_cost_data(state: AgentState) -> AgentState:
     print("Azure Cost Management returned no cost data after all retry attempts.")
     return empty_cost_data_state()
 
+
+def normalize_usage_date(value: Any) -> str | None:
+    """Convert Azure UsageDate values to ISO date text."""
+    if value is None:
+        return None
+
+    date_text = str(value)
+    if len(date_text) == 8 and date_text.isdigit():
+        return datetime.strptime(date_text, "%Y%m%d").date().isoformat()
+    return date_text
+
+
 # Maps Azure Cost Management rows onto the FOCUS v1.0 (FinOps Open Cost and Usage Specification) schema.
 def format_focus_data(state: AgentState) -> AgentState:
     records = [
         {
             "BilledCost": row.get("PreTaxCost", 0.0),
             "EffectiveCost": row.get("PreTaxCost", 0.0),
-            "ChargePeriodStart": row.get("UsageDate"),
+            "ChargePeriodStart": normalize_usage_date(row.get("UsageDate")),
             "ChargeCategory": "Usage",
             "ProviderName": "Azure",
             "PublisherName": "Microsoft",

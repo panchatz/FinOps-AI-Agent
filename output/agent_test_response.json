@@ -1,50 +1,47 @@
 {
-  "approved_recommendations": [
-    {
-      "resource_id": "vm-prod-01",
-      "action": "rightsize_vm",
-      "estimated_monthly_saving": 30.0,
-      "reason": "The VM is only utilizing 18% of its CPU and 31% of its memory, indicating it could be right-sized to a smaller instance type.",
-      "policy_violations": [],
-      "status": "approved"
-    },
-    {
-      "resource_id": "vm-dev-01",
-      "action": "schedule_shutdown",
-      "estimated_monthly_saving": 20.0,
-      "reason": "The VM is only utilized during business hours and has a low CPU and memory utilization, making it a good candidate for scheduled shutdowns.",
-      "policy_violations": [],
-      "status": "approved"
-    },
-    {
-      "resource_id": "vm-test-01",
-      "action": "schedule_shutdown",
-      "estimated_monthly_saving": 15.0,
-      "reason": "The VM is only utilized during business hours and has a low CPU and memory utilization, making it a good candidate for scheduled shutdowns.",
-      "policy_violations": [],
-      "status": "approved"
-    },
-    {
-      "resource_id": "storage-01",
-      "action": "move_to_cool_tier",
-      "estimated_monthly_saving": 10.0,
-      "reason": "The storage is utilized at 100% and has a high cost, making it a good candidate for moving to a cooler storage tier.",
-      "policy_violations": [],
-      "status": "approved"
-    }
-  ],
+  "approved_recommendations": [],
   "rejected_recommendations": [
     {
-      "resource_id": "vm-prod-02",
+      "resource_id": "/subscriptions/48521cab-38ec-4529-8991-1ef5bb9b095c/resourcegroups/mc_egcss-dev-rg19_egcss-dev-rg19-aks01_westeurope/providers/microsoft.compute/virtualmachinescalesets/aks-systempool-13197119-vmss",
       "action": "rightsize_vm",
-      "estimated_monthly_saving": 50.0,
-      "reason": "The VM is utilizing 44% of its CPU and 62% of its memory, indicating it could be right-sized to a smaller instance type.",
+      "estimated_monthly_saving": 17.5106448,
+      "reason": "The VM is underutilized, with an average CPU usage of 10% and memory usage of 20%. Right-sizing the VM to a smaller instance type would save approximately $17.51 per month.",
       "policy_violations": [
-        "Resource is policy-locked.",
-        "Resource does not meet the low-utilisation threshold."
+        "Resource is not present in the approved inventory."
       ],
-      "status": "rejected",
-      "human_review": "rejected"
+      "hard_policy_violations": [
+        "Resource is not present in the approved inventory."
+      ],
+      "status": "blocked",
+      "human_review": "not_permitted"
+    },
+    {
+      "resource_id": "/subscriptions/48521cab-38ec-4529-8991-1ef5bb9b095c/resourcegroups/mc_egcss-dev-rg19_egcss-dev-rg19-aks01_westeurope/providers/microsoft.compute/virtualmachinescalesets/aks-userpool-13777426-vmss",
+      "action": "schedule_shutdown",
+      "estimated_monthly_saving": 30.542112,
+      "reason": "The VM is only used for a short period during the day, and can be shut down during off-peak hours to save approximately $30.54 per month.",
+      "policy_violations": [
+        "Resource is not present in the approved inventory."
+      ],
+      "hard_policy_violations": [
+        "Resource is not present in the approved inventory."
+      ],
+      "status": "blocked",
+      "human_review": "not_permitted"
+    },
+    {
+      "resource_id": "/subscriptions/48521cab-38ec-4529-8991-1ef5bb9b095c/resourcegroups/mc_egcss-dev-rg19_egcss-dev-rg19-aks01_westeurope/providers/microsoft.compute/disks/pvc-56c66a38-891b-4f58-9311-34d29cee64cb",
+      "action": "move_to_cool_tier",
+      "estimated_monthly_saving": 0.073391947776,
+      "reason": "The disk is not frequently accessed, and can be moved to a cooler storage tier to save approximately $0.07 per month.",
+      "policy_violations": [
+        "Resource is not present in the approved inventory."
+      ],
+      "hard_policy_violations": [
+        "Resource is not present in the approved inventory."
+      ],
+      "status": "blocked",
+      "human_review": "not_permitted"
     }
   ]
 }
