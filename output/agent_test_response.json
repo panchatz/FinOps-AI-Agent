@@ -2,10 +2,10 @@
   "approved_recommendations": [],
   "rejected_recommendations": [
     {
-      "resource_id": "/subscriptions/48521cab-38ec-4529-8991-1ef5bb9b095c/resourcegroups/mc_egcss-dev-rg19_egcss-dev-rg19-aks01_westeurope/providers/microsoft.compute/virtualmachinescalesets/aks-systempool-13197119-vmss",
+      "resource_id": "/subscriptions/48521cab-38ec-4529-8991-1ef5bb9b095c/resourcegroups/egcss-dev-rg09/providers/microsoft.compute/virtualmachines/egcss-dev-rg09-vm01",
       "action": "rightsize_vm",
-      "estimated_monthly_saving": 17.5106448,
-      "reason": "The VM is underutilized, with an average CPU usage of 10% and memory usage of 20%. Right-sizing the VM to a smaller instance type would save approximately $17.51 per month.",
+      "estimated_monthly_saving": 2.0,
+      "reason": "The VM is only using 10% of its CPU and memory, suggesting it could be right-sized to reduce costs.",
       "policy_violations": [
         "Resource is not present in the approved inventory."
       ],
@@ -16,10 +16,10 @@
       "human_review": "not_permitted"
     },
     {
-      "resource_id": "/subscriptions/48521cab-38ec-4529-8991-1ef5bb9b095c/resourcegroups/mc_egcss-dev-rg19_egcss-dev-rg19-aks01_westeurope/providers/microsoft.compute/virtualmachinescalesets/aks-userpool-13777426-vmss",
+      "resource_id": "/subscriptions/48521cab-38ec-4529-8991-1ef5bb9b095c/resourcegroups/egcss-dev-rg09/providers/microsoft.compute/virtualmachines/egcss-dev-rg09-vm02",
       "action": "schedule_shutdown",
-      "estimated_monthly_saving": 30.542112,
-      "reason": "The VM is only used for a short period during the day, and can be shut down during off-peak hours to save approximately $30.54 per month.",
+      "estimated_monthly_saving": 3.0,
+      "reason": "The VM is only used for a few hours a day, suggesting it could be shut down during off-peak hours to reduce costs.",
       "policy_violations": [
         "Resource is not present in the approved inventory."
       ],
@@ -30,10 +30,10 @@
       "human_review": "not_permitted"
     },
     {
-      "resource_id": "/subscriptions/48521cab-38ec-4529-8991-1ef5bb9b095c/resourcegroups/mc_egcss-dev-rg19_egcss-dev-rg19-aks01_westeurope/providers/microsoft.compute/disks/pvc-56c66a38-891b-4f58-9311-34d29cee64cb",
+      "resource_id": "/subscriptions/48521cab-38ec-4529-8991-1ef5bb9b095c/resourcegroups/egcss-dev-rg14/providers/microsoft.storage/storageaccounts/egcssdevrg14sa01",
       "action": "move_to_cool_tier",
-      "estimated_monthly_saving": 0.073391947776,
-      "reason": "The disk is not frequently accessed, and can be moved to a cooler storage tier to save approximately $0.07 per month.",
+      "estimated_monthly_saving": 0.5,
+      "reason": "The storage account is only using a small amount of data, suggesting it could be moved to a cooler tier to reduce costs.",
       "policy_violations": [
         "Resource is not present in the approved inventory."
       ],

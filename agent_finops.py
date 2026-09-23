@@ -12,6 +12,7 @@ from typing import Any, TypedDict
 from azure.identity import ClientSecretCredential
 from azure.mgmt.costmanagement import CostManagementClient
 from azure.mgmt.costmanagement.models import (QueryAggregation,QueryDataset,QueryDefinition,QueryGrouping,QueryTimePeriod,)
+from azure.monitor.query import MetricAggregationType, MetricsQueryClient
 from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama import ChatOllama
@@ -33,17 +34,25 @@ SUPPORTED_SERVICES = {
     for service in os.environ.get("FINOPS_SERVICES", "Virtual Machines,Storage").split(",")
     if service.strip()
 }
+AKS_POOL_MARKERS = ("aks", "agentpool", "nodepool") # used for identifying Azure Kubernetes resources (and excludee them from certain operations)
 OUTPUT_FILE = Path(__file__).parent / "output" / "agent_test_response.json"
 FOCUS_FILE = Path(__file__).parent / "output" / "focus_billed_costs.json"
 DATABASE_FILE = Path("output") / "finops_costs.db"
 MAX_EMPTY_RESULT_RETRIES = 2
 RETRY_DELAY_SECONDS = 2
+AZURE_CPU_METRIC = os.environ.get("AZURE_CPU_METRIC", "Percentage CPU")
+AZURE_MEMORY_METRIC = os.environ.get("AZURE_MEMORY_METRIC", "Memory Percentage")
+AZURE_CPU_METRIC_NAMESPACE = os.environ.get("AZURE_CPU_METRIC_NAMESPACE", "Microsoft.Compute")
+AZURE_MEMORY_METRIC_NAMESPACE = os.environ.get("AZURE_MEMORY_METRIC_NAMESPACE", "Microsoft.Compute")
+AZURE_METRICS_LOOKBACK_DAYS = 30
 
 class AgentState(TypedDict, total=False):
     resources: list[dict]
     response: str
     credential: Any
     azure_rows: list[dict]
+    excluded_azure_rows: list[dict]
+    azure_metrics: list[dict]
     focus_records: list[dict]
     database_path: str
     historical_records: list[dict]
@@ -106,6 +115,16 @@ def ensure_database() -> None:
                 service_name TEXT NOT NULL,
                 resource_id TEXT NOT NULL,
                 subscription_id TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS resource_utilization (
+                resource_id TEXT PRIMARY KEY,
+                cpu_utilization REAL NOT NULL,
+                memory_utilization REAL NOT NULL,
+                recorded_at TEXT NOT NULL
             )
             """
         )
@@ -210,6 +229,16 @@ def is_dev_or_test_vm(resource: dict | None, azure_rows: list[dict]) -> bool:
         azure_name = azure_resource_name(azure_id).casefold()
         return "test" in azure_name or "dev" in azure_name
     return False
+
+
+def is_aks_pool_resource(row: dict) -> bool:
+    """Exclude Azure VM and disk resources identifiable as Azure Kubernetes pool resources."""
+    resource_id = str(row.get("ResourceId", "")).casefold()
+    is_vm_scale_set_or_disk = (
+        "/virtualmachinescalesets/" in resource_id
+        or "/disks/" in resource_id
+    )
+    return is_vm_scale_set_or_disk and any(marker in resource_id for marker in AKS_POOL_MARKERS)
 
 
 def validate_policy_constraints(state: AgentState) -> AgentState:
@@ -327,6 +356,75 @@ def authenticate_service_principal(state: AgentState) -> AgentState:
     credential = ClientSecretCredential(tenant_id=AZURE_TENANT_ID,client_id=AZURE_CLIENT_ID,client_secret=AZURE_CLIENT_SECRET,)
     return {"credential": credential}
 
+
+def average_azure_metric(
+    client: MetricsQueryClient,
+    resource_id: str,
+    metric_name: str,
+    metric_namespace: str,
+) -> float | None:
+    result = client.query_resource(
+        resource_id,
+        metric_names=[metric_name],
+        timespan=timedelta(days=AZURE_METRICS_LOOKBACK_DAYS),
+        granularity=timedelta(hours=1),
+        aggregations=[MetricAggregationType.AVERAGE],
+        metric_namespace=metric_namespace,
+    )
+    values = [
+        data.average
+        for metric in result.metrics
+        for timeseries in metric.timeseries
+        for data in timeseries.data
+        if data.average is not None
+    ]
+    return sum(values) / len(values) if values else None
+
+
+def collect_azure_metrics(state: AgentState) -> AgentState:
+    """Collect 30-day average VM CPU and memory usage from Azure Monitor."""
+    metrics = []
+    client = MetricsQueryClient(state["credential"])
+    resource_ids = {
+        str(row.get("ResourceId"))
+        for row in state.get("azure_rows", [])
+        if str(row.get("ResourceId", "")).casefold().find("/virtualmachines/") >= 0
+    }
+
+    for resource_id in resource_ids:
+        cpu = None
+        memory = None
+        try:
+            cpu = average_azure_metric(
+                client,
+                resource_id,
+                AZURE_CPU_METRIC,
+                AZURE_CPU_METRIC_NAMESPACE,
+            )
+        except Exception as error:
+            print(f"Azure Monitor metric '{AZURE_CPU_METRIC}' unavailable for {resource_id}: {error}")
+        try:
+            memory = average_azure_metric(
+                client,
+                resource_id,
+                AZURE_MEMORY_METRIC,
+                AZURE_MEMORY_METRIC_NAMESPACE,
+            )
+        except Exception as error:
+            print(f"Azure Monitor metric '{AZURE_MEMORY_METRIC}' unavailable for {resource_id}: {error}")
+
+        if cpu is not None or memory is not None:
+            metrics.append(
+                {
+                    "resource_id": resource_id,
+                    "cpu_utilization": cpu,
+                    "memory_utilization": memory,
+                    "source": "azure_monitor",
+                }
+            )
+
+    return {"azure_metrics": metrics}
+
 # Gather Azure cost data using the Azure Cost Management API
 def gather_azure_costs(state: AgentState) -> AgentState:
     if not AZURE_SUBSCRIPTION_ID:
@@ -356,13 +454,18 @@ def gather_azure_costs(state: AgentState) -> AgentState:
         return {"azure_rows": [], "azure_error": f"Azure Cost Management query failed: {error}"}
 
     columns = [column.name for column in result.columns]
-    azure_rows = [
-        dict(zip(columns, row))
-        for row in result.rows
-        if str(dict(zip(columns, row)).get("ServiceName", "")).casefold()
-        in SUPPORTED_SERVICES
-    ]
-    return {"azure_rows": azure_rows}
+    azure_rows = []
+    excluded_azure_rows = []
+    for row in result.rows:
+        azure_row = dict(zip(columns, row))
+        if str(azure_row.get("ServiceName", "")).casefold() not in SUPPORTED_SERVICES:
+            continue
+        if is_aks_pool_resource(azure_row):
+            excluded_azure_rows.append(azure_row)
+            continue
+        azure_rows.append(azure_row)
+    print(f"Excluded AKS pool cost rows: {len(excluded_azure_rows)}")
+    return {"azure_rows": azure_rows, "excluded_azure_rows": excluded_azure_rows}
 
 
 # Route after gather_azure_costs based on whether the query failed or returned no data.
@@ -436,6 +539,48 @@ def store_focus_data(state: AgentState) -> AgentState:
     inserted_records = 0
     skipped_records = 0
     with sqlite3.connect(DATABASE_FILE) as connection:
+        recorded_at = datetime.now(timezone.utc).isoformat()
+        utilization_by_id = {
+            metric["resource_id"]: metric
+            for metric in state.get("azure_metrics", [])
+        }
+        for resource in state.get("resources", []):
+            metric = utilization_by_id.get(resource["resource_id"], resource)
+            connection.execute(
+                """
+                INSERT INTO resource_utilization (
+                    resource_id, cpu_utilization, memory_utilization, recorded_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(resource_id) DO UPDATE SET
+                    cpu_utilization = excluded.cpu_utilization,
+                    memory_utilization = excluded.memory_utilization,
+                    recorded_at = excluded.recorded_at
+                """,
+                (
+                    resource["resource_id"],
+                    metric.get("cpu_utilization") if metric.get("cpu_utilization") is not None else resource["cpu_utilization"],
+                    metric.get("memory_utilization") if metric.get("memory_utilization") is not None else resource["memory_utilization"],
+                    recorded_at,
+                ),
+            )
+
+        for metric in state.get("azure_metrics", []):
+            if not any(resource["resource_id"] == metric["resource_id"] for resource in state.get("resources", [])):
+                if metric.get("cpu_utilization") is None or metric.get("memory_utilization") is None:
+                    continue
+                connection.execute(
+                    """
+                    INSERT INTO resource_utilization (
+                        resource_id, cpu_utilization, memory_utilization, recorded_at
+                    ) VALUES (?, ?, ?, ?)
+                    ON CONFLICT(resource_id) DO UPDATE SET
+                        cpu_utilization = excluded.cpu_utilization,
+                        memory_utilization = excluded.memory_utilization,
+                        recorded_at = excluded.recorded_at
+                    """,
+                    (metric["resource_id"], metric["cpu_utilization"], metric["memory_utilization"], recorded_at),
+                )
+
         # Insert each focus record into the database while checking for duplicates
         for record in state["focus_records"]:
             values = (
@@ -518,6 +663,7 @@ def build_graph():
     workflow.add_node("save_audited_report", save_audited_report)
     workflow.add_node("authenticate_service_principal", authenticate_service_principal)
     workflow.add_node("gather_azure_costs", gather_azure_costs)
+    workflow.add_node("collect_azure_metrics", collect_azure_metrics)
     workflow.add_node("retry_gather_azure_costs", retry_gather_azure_costs)
     workflow.add_node("handle_azure_failure", handle_azure_failure)
     workflow.add_node("handle_empty_cost_data", handle_empty_cost_data)
@@ -527,8 +673,9 @@ def build_graph():
     workflow.add_edge(START, "load_inventory")
     workflow.add_edge("load_inventory", "authenticate_service_principal")
     workflow.add_edge("authenticate_service_principal", "gather_azure_costs")
+    workflow.add_edge("gather_azure_costs", "collect_azure_metrics")
     workflow.add_conditional_edges(
-        "gather_azure_costs",
+        "collect_azure_metrics",
         route_after_gather_azure_costs,
         {
             "handle_azure_failure": "handle_azure_failure",
