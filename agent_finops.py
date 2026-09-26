@@ -41,9 +41,9 @@ DATABASE_FILE = Path("output") / "finops_costs.db"
 MAX_EMPTY_RESULT_RETRIES = 2
 RETRY_DELAY_SECONDS = 2
 AZURE_CPU_METRIC = os.environ.get("AZURE_CPU_METRIC", "Percentage CPU")
-AZURE_MEMORY_METRIC = os.environ.get("AZURE_MEMORY_METRIC", "Memory Percentage")
-AZURE_CPU_METRIC_NAMESPACE = os.environ.get("AZURE_CPU_METRIC_NAMESPACE", "Microsoft.Compute")
-AZURE_MEMORY_METRIC_NAMESPACE = os.environ.get("AZURE_MEMORY_METRIC_NAMESPACE", "Microsoft.Compute")
+AZURE_MEMORY_METRIC = os.environ.get("AZURE_MEMORY_METRIC", "Available Memory Percentage")
+AZURE_CPU_METRIC_NAMESPACE = os.environ.get("AZURE_CPU_METRIC_NAMESPACE", "microsoft.compute/virtualmachines")
+AZURE_MEMORY_METRIC_NAMESPACE = os.environ.get("AZURE_MEMORY_METRIC_NAMESPACE", "microsoft.compute/virtualmachines")
 AZURE_METRICS_LOOKBACK_DAYS = 30
 
 class AgentState(TypedDict, total=False):
@@ -52,6 +52,7 @@ class AgentState(TypedDict, total=False):
     credential: Any
     azure_rows: list[dict]
     excluded_azure_rows: list[dict]
+    using_sample_data: bool
     azure_metrics: list[dict]
     focus_records: list[dict]
     database_path: str
@@ -72,6 +73,7 @@ class AgentState(TypedDict, total=False):
 class FocusRecord(BaseModel):
     BilledCost: float = Field(ge=0)
     EffectiveCost: float = Field(ge=0)
+    ConsumedQuantity: float = Field(ge=0)
     ChargePeriodStart: str | None
     ChargeCategory: str
     ProviderName: str
@@ -108,6 +110,7 @@ def ensure_database() -> None:
                 id INTEGER PRIMARY KEY,
                 billed_cost REAL NOT NULL,
                 effective_cost REAL NOT NULL,
+                consumed_quantity REAL NOT NULL DEFAULT 0,
                 charge_period_start TEXT,
                 charge_category TEXT NOT NULL,
                 provider_name TEXT NOT NULL,
@@ -118,22 +121,55 @@ def ensure_database() -> None:
             )
             """
         )
+        focus_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(focus_costs)")
+        }
+        if "consumed_quantity" not in focus_columns:
+            connection.execute(
+                "ALTER TABLE focus_costs ADD COLUMN consumed_quantity REAL NOT NULL DEFAULT 0"
+            )
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS resource_utilization (
                 resource_id TEXT PRIMARY KEY,
-                cpu_utilization REAL NOT NULL,
-                memory_utilization REAL NOT NULL,
+                cpu_utilization REAL,
+                memory_utilization REAL,
                 recorded_at TEXT NOT NULL
             )
             """
         )
+        columns = {
+            row[1]: row[3]
+            for row in connection.execute("PRAGMA table_info(resource_utilization)")
+        }
+        if columns["cpu_utilization"] or columns["memory_utilization"]:
+            connection.execute("ALTER TABLE resource_utilization RENAME TO resource_utilization_old")
+            connection.execute(
+                """
+                CREATE TABLE resource_utilization (
+                    resource_id TEXT PRIMARY KEY,
+                    cpu_utilization REAL,
+                    memory_utilization REAL,
+                    recorded_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO resource_utilization (
+                    resource_id, cpu_utilization, memory_utilization, recorded_at
+                ) SELECT resource_id, cpu_utilization, memory_utilization, recorded_at
+                FROM resource_utilization_old
+                """
+            )
+            connection.execute("DROP TABLE resource_utilization_old")
 
 
 def query_ollama(
     resources: list[dict],
     focus_records: list[dict],
     historical_records: list[dict],
+    azure_metrics: list[dict],
     database_path: str,
 ) -> str:
     prompt = ChatPromptTemplate.from_messages(
@@ -154,6 +190,9 @@ FOCUS-formatted Azure records:
 Historical FOCUS records from previous months:
 {historical_records}
 
+Live Azure Monitor metrics, averaged across the last 30 days:
+{azure_metrics}
+
 Historical data is stored in SQLite at:
 {database_path}
 
@@ -164,7 +203,10 @@ recommendation, explain what should change, why it would help, and the likely
 monthly saving where it can be estimated. Return valid JSON with a
 recommendations array and a short, clear summary. Take into consideration each 
 resource's monthly cost, CPU and memory utilisation, uptime requirements and all 
-the corresponding information in the database. Each recommendation must include
+the corresponding information in the database. Prefer matching live Azure Monitor
+metrics over local inventory utilisation values. Do not treat missing or null
+Azure Monitor values as low utilisation, and do not recommend rightsizing when
+live CPU or memory metrics are unavailable. Each recommendation must include
 resource_id, action (rightsize_vm, schedule_shutdown, or move_to_cool_tier),
 estimated_monthly_saving, and reason. Return JSON only.""",
             ),
@@ -176,6 +218,7 @@ estimated_monthly_saving, and reason. Return JSON only.""",
             "resources": json.dumps(resources, indent=2),
             "focus_records": json.dumps(focus_records, indent=2),
             "historical_records": json.dumps(historical_records, indent=2),
+            "azure_metrics": json.dumps(azure_metrics, indent=2),
             "database_path": database_path,
         }
     )
@@ -186,13 +229,41 @@ def load_inventory(state: AgentState) -> AgentState:
     resources = [resource.__dict__ for resource in load_resources(INPUT_FILE)]
     return {"resources": resources}
 
+
+def enrich_resources_with_azure_metrics(resources: list[dict], azure_metrics: list[dict]) -> list[dict]:
+    """Use live Azure Monitor values when the inventory and Azure IDs match."""
+    metrics_by_id = {
+        metric["resource_id"].casefold(): metric
+        for metric in azure_metrics
+    }
+    enriched_resources = []
+    for resource in resources:
+        metric = metrics_by_id.get(str(resource["resource_id"]).casefold())
+        if metric is None:
+            enriched_resources.append(resource)
+            continue
+        enriched_resources.append(
+            {
+                **resource,
+                "cpu_utilization": metric.get("cpu_utilization") if metric.get("cpu_utilization") is not None else resource["cpu_utilization"],
+                "memory_utilization": metric.get("memory_utilization") if metric.get("memory_utilization") is not None else resource["memory_utilization"],
+                "utilization_source": "azure_monitor",
+            }
+        )
+    return enriched_resources
+
 # Analyse the resource inventory and Azure cost data using the LLM
 def analyse_inventory(state: AgentState) -> AgentState:
+    resources = enrich_resources_with_azure_metrics(
+        state["resources"],
+        state.get("azure_metrics", []),
+    )
     return {
         "response": query_ollama(
-            state["resources"],
+            resources,
             state["focus_records"],
             state["historical_records"],
+            state.get("azure_metrics", []),
             state["database_path"],
         )
     }
@@ -404,24 +475,29 @@ def collect_azure_metrics(state: AgentState) -> AgentState:
         except Exception as error:
             print(f"Azure Monitor metric '{AZURE_CPU_METRIC}' unavailable for {resource_id}: {error}")
         try:
-            memory = average_azure_metric(
+            available_memory = average_azure_metric(
                 client,
                 resource_id,
                 AZURE_MEMORY_METRIC,
                 AZURE_MEMORY_METRIC_NAMESPACE,
             )
+            memory = 100 - available_memory if available_memory is not None else None
         except Exception as error:
             print(f"Azure Monitor metric '{AZURE_MEMORY_METRIC}' unavailable for {resource_id}: {error}")
 
-        if cpu is not None or memory is not None:
-            metrics.append(
-                {
-                    "resource_id": resource_id,
-                    "cpu_utilization": cpu,
-                    "memory_utilization": memory,
-                    "source": "azure_monitor",
-                }
-            )
+        if cpu is None:
+            print(f"Azure Monitor metric '{AZURE_CPU_METRIC}' returned no data for {resource_id}.")
+        if memory is None:
+            print(f"Azure Monitor metric '{AZURE_MEMORY_METRIC}' returned no data for {resource_id}.")
+
+        metrics.append(
+            {
+                "resource_id": resource_id,
+                "cpu_utilization": cpu,
+                "memory_utilization": memory,
+                "source": "azure_monitor",
+            }
+        )
 
     return {"azure_metrics": metrics}
 
@@ -439,7 +515,10 @@ def gather_azure_costs(state: AgentState) -> AgentState:
         time_period=QueryTimePeriod(from_property=now - timedelta(days=30), to=now),
         dataset=QueryDataset(
             granularity="Daily",
-            aggregation={"totalCost": QueryAggregation(name="PreTaxCost", function="Sum")},
+            aggregation={
+                "totalCost": QueryAggregation(name="PreTaxCost", function="Sum"),
+                "totalUsageQuantity": QueryAggregation(name="UsageQuantity", function="Sum"),
+            },
             grouping=[
                 QueryGrouping(type="Dimension", name="ServiceName"),
                 QueryGrouping(type="Dimension", name="ResourceId"),
@@ -490,13 +569,36 @@ def retry_gather_azure_costs(state: AgentState) -> AgentState:
 
 def handle_azure_failure(state: AgentState) -> AgentState:
     print(f"Azure query failure: {state['azure_error']}")
-    return empty_cost_data_state()
+    return {
+        "azure_rows": sample_cost_rows(state["resources"]),
+        "using_sample_data": True,
+    }
 
 
 
 def handle_empty_cost_data(state: AgentState) -> AgentState:
     print("Azure Cost Management returned no cost data after all retry attempts.")
-    return empty_cost_data_state()
+    return {
+        "azure_rows": sample_cost_rows(state["resources"]),
+        "using_sample_data": True,
+    }
+
+
+def sample_cost_rows(resources: list[dict]) -> list[dict]:
+    """Convert the local inventory into cost rows when Azure cost data is unavailable."""
+    usage_date = datetime.now(timezone.utc).strftime("%Y%m%d")
+    service_names = {"vm": "Virtual Machines", "storage": "Storage"}
+    return [
+        {
+            "PreTaxCost": resource["monthly_cost"],
+            "UsageQuantity": 1.0,
+            "UsageDate": usage_date,
+            "ServiceName": service_names[resource["service"]],
+            "ResourceId": resource["resource_id"],
+        }
+        for resource in resources
+        if resource["service"] in service_names
+    ]
 
 
 def normalize_usage_date(value: Any) -> str | None:
@@ -516,13 +618,14 @@ def format_focus_data(state: AgentState) -> AgentState:
         {
             "BilledCost": row.get("PreTaxCost", 0.0),
             "EffectiveCost": row.get("PreTaxCost", 0.0),
+            "ConsumedQuantity": row.get("UsageQuantity", 0.0),
             "ChargePeriodStart": normalize_usage_date(row.get("UsageDate")),
             "ChargeCategory": "Usage",
-            "ProviderName": "Azure",
+            "ProviderName": "Sample" if state.get("using_sample_data") else "Azure",
             "PublisherName": "Microsoft",
             "ServiceName": row.get("ServiceName", "Unknown"),
             "ResourceID": row.get("ResourceId", "N/A"),
-            "SubscriptionID": AZURE_SUBSCRIPTION_ID,
+            "SubscriptionID": "sample" if state.get("using_sample_data") else AZURE_SUBSCRIPTION_ID,
         }
         for row in state["azure_rows"]
     ]
@@ -566,8 +669,6 @@ def store_focus_data(state: AgentState) -> AgentState:
 
         for metric in state.get("azure_metrics", []):
             if not any(resource["resource_id"] == metric["resource_id"] for resource in state.get("resources", [])):
-                if metric.get("cpu_utilization") is None or metric.get("memory_utilization") is None:
-                    continue
                 connection.execute(
                     """
                     INSERT INTO resource_utilization (
@@ -578,7 +679,12 @@ def store_focus_data(state: AgentState) -> AgentState:
                         memory_utilization = excluded.memory_utilization,
                         recorded_at = excluded.recorded_at
                     """,
-                    (metric["resource_id"], metric["cpu_utilization"], metric["memory_utilization"], recorded_at),
+                    (
+                        metric["resource_id"],
+                        metric["cpu_utilization"],
+                        metric["memory_utilization"],
+                        recorded_at,
+                    ),
                 )
 
         # Insert each focus record into the database while checking for duplicates
@@ -586,6 +692,7 @@ def store_focus_data(state: AgentState) -> AgentState:
             values = (
                 record["BilledCost"],
                 record["EffectiveCost"],
+                record["ConsumedQuantity"],
                 record["ChargePeriodStart"],
                 record["ChargeCategory"],
                 record["ProviderName"],
@@ -597,10 +704,10 @@ def store_focus_data(state: AgentState) -> AgentState:
             connection.execute(
                 """
                 INSERT INTO focus_costs (
-                    billed_cost, effective_cost, charge_period_start, charge_category,
+                    billed_cost, effective_cost, consumed_quantity, charge_period_start, charge_category,
                     provider_name, publisher_name, service_name, resource_id, subscription_id
                 )
-                SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+                SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 WHERE NOT EXISTS (
                     SELECT 1 FROM focus_costs
                     WHERE subscription_id = ?
@@ -626,6 +733,7 @@ def store_focus_data(state: AgentState) -> AgentState:
 def query_historical_data(state: AgentState) -> AgentState:
     current_month = datetime.now(timezone.utc).replace(day=1).strftime("%Y-%m-%d")
     history_start = (datetime.now(timezone.utc) - timedelta(days=180)).strftime("%Y-%m-%d")
+    subscription_id = "sample" if state.get("using_sample_data") else AZURE_SUBSCRIPTION_ID
 
     ensure_database()
     with sqlite3.connect(DATABASE_FILE) as connection:
@@ -634,6 +742,7 @@ def query_historical_data(state: AgentState) -> AgentState:
             """
             SELECT billed_cost AS BilledCost,
                    effective_cost AS EffectiveCost,
+                     consumed_quantity AS ConsumedQuantity,
                    charge_period_start AS ChargePeriodStart,
                    charge_category AS ChargeCategory,
                    provider_name AS ProviderName,
@@ -647,7 +756,7 @@ def query_historical_data(state: AgentState) -> AgentState:
               AND charge_period_start < ?
             ORDER BY charge_period_start, resource_id
             """,
-            (AZURE_SUBSCRIPTION_ID, history_start, current_month),
+            (subscription_id, history_start, current_month),
         ).fetchall()
 
     return {"historical_records": validate_focus_records([dict(row) for row in rows])}
@@ -685,8 +794,8 @@ def build_graph():
         },
     )
     workflow.add_edge("retry_gather_azure_costs", "gather_azure_costs")
-    workflow.add_edge("handle_azure_failure", "analyse_inventory")
-    workflow.add_edge("handle_empty_cost_data", "analyse_inventory")
+    workflow.add_edge("handle_azure_failure", "format_focus_data")
+    workflow.add_edge("handle_empty_cost_data", "format_focus_data")
     workflow.add_edge("format_focus_data", "store_focus_data")
     workflow.add_edge("store_focus_data", "query_historical_data")
     workflow.add_edge("query_historical_data", "analyse_inventory")

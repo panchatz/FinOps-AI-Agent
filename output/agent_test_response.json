@@ -1,47 +1,41 @@
 {
-  "approved_recommendations": [],
-  "rejected_recommendations": [
+  "approved_recommendations": [
     {
-      "resource_id": "/subscriptions/48521cab-38ec-4529-8991-1ef5bb9b095c/resourcegroups/egcss-dev-rg09/providers/microsoft.compute/virtualmachines/egcss-dev-rg09-vm01",
+      "resource_id": "vm-prod-01",
       "action": "rightsize_vm",
-      "estimated_monthly_saving": 2.0,
-      "reason": "The VM is only using 10% of its CPU and memory, suggesting it could be right-sized to reduce costs.",
-      "policy_violations": [
-        "Resource is not present in the approved inventory."
-      ],
-      "hard_policy_violations": [
-        "Resource is not present in the approved inventory."
-      ],
-      "status": "blocked",
-      "human_review": "not_permitted"
+      "estimated_monthly_saving": 20.0,
+      "reason": "VM is underutilized (18% CPU, 31% memory) and has a high monthly cost of $420. Right-sizing to a smaller instance type could save up to 5% of the total cost.",
+      "policy_violations": [],
+      "hard_policy_violations": [],
+      "status": "approved"
     },
     {
-      "resource_id": "/subscriptions/48521cab-38ec-4529-8991-1ef5bb9b095c/resourcegroups/egcss-dev-rg09/providers/microsoft.compute/virtualmachines/egcss-dev-rg09-vm02",
-      "action": "schedule_shutdown",
-      "estimated_monthly_saving": 3.0,
-      "reason": "The VM is only used for a few hours a day, suggesting it could be shut down during off-peak hours to reduce costs.",
-      "policy_violations": [
-        "Resource is not present in the approved inventory."
-      ],
-      "hard_policy_violations": [
-        "Resource is not present in the approved inventory."
-      ],
-      "status": "blocked",
-      "human_review": "not_permitted"
+      "resource_id": "vm-dev-01",
+      "action": "rightsize_vm",
+      "estimated_monthly_saving": 13.0,
+      "reason": "VM is underutilized (12% CPU, 28% memory) and has a moderate monthly cost of $260. Right-sizing to a smaller instance type could save up to 5% of the total cost.",
+      "policy_violations": [],
+      "hard_policy_violations": [],
+      "status": "approved"
     },
     {
-      "resource_id": "/subscriptions/48521cab-38ec-4529-8991-1ef5bb9b095c/resourcegroups/egcss-dev-rg14/providers/microsoft.storage/storageaccounts/egcssdevrg14sa01",
+      "resource_id": "vm-test-01",
+      "action": "rightsize_vm",
+      "estimated_monthly_saving": 9.0,
+      "reason": "VM is underutilized (16% CPU, 24% memory) and has a low monthly cost of $180. Right-sizing to a smaller instance type could save up to 5% of the total cost.",
+      "policy_violations": [],
+      "hard_policy_violations": [],
+      "status": "approved"
+    },
+    {
+      "resource_id": "storage-01",
       "action": "move_to_cool_tier",
-      "estimated_monthly_saving": 0.5,
-      "reason": "The storage account is only using a small amount of data, suggesting it could be moved to a cooler tier to reduce costs.",
-      "policy_violations": [
-        "Resource is not present in the approved inventory."
-      ],
-      "hard_policy_violations": [
-        "Resource is not present in the approved inventory."
-      ],
-      "status": "blocked",
-      "human_review": "not_permitted"
+      "estimated_monthly_saving": 10.0,
+      "reason": "Storage is underutilized (0% CPU, 0% memory) and has a high monthly cost of $190. Moving to a cooler storage tier could save up to 5% of the total cost.",
+      "policy_violations": [],
+      "hard_policy_violations": [],
+      "status": "approved"
     }
-  ]
+  ],
+  "rejected_recommendations": []
 }
