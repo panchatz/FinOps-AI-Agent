@@ -3,26 +3,35 @@
     {
       "resource_id": "vm-prod-01",
       "action": "rightsize_vm",
-      "estimated_monthly_saving": 20.0,
-      "reason": "VM is underutilized (18% CPU, 31% memory) and has a high monthly cost of $420. Right-sizing to a smaller instance type could save up to 5% of the total cost.",
+      "estimated_monthly_saving": 50.0,
+      "reason": "High CPU utilisation (18%) and moderate memory utilisation (31%). Suggesting Standard_B2s SKU.",
+      "proposed_sku": "Standard_B2s",
+      "proposed_sku_reason": "Balances performance with cost, suitable for production environment.",
+      "sku_recommendation_confidence": "high",
       "policy_violations": [],
       "hard_policy_violations": [],
       "status": "approved"
     },
     {
       "resource_id": "vm-dev-01",
-      "action": "rightsize_vm",
-      "estimated_monthly_saving": 13.0,
-      "reason": "VM is underutilized (12% CPU, 28% memory) and has a moderate monthly cost of $260. Right-sizing to a smaller instance type could save up to 5% of the total cost.",
+      "action": "schedule_shutdown",
+      "estimated_monthly_saving": 20.0,
+      "reason": "Business-hours uptime requirement and moderate CPU utilisation (12%). Suggesting shutdown during non-business hours.",
+      "proposed_sku": null,
+      "proposed_sku_reason": "",
+      "sku_recommendation_confidence": "low",
       "policy_violations": [],
       "hard_policy_violations": [],
       "status": "approved"
     },
     {
       "resource_id": "vm-test-01",
-      "action": "rightsize_vm",
-      "estimated_monthly_saving": 9.0,
-      "reason": "VM is underutilized (16% CPU, 24% memory) and has a low monthly cost of $180. Right-sizing to a smaller instance type could save up to 5% of the total cost.",
+      "action": "schedule_shutdown",
+      "estimated_monthly_saving": 15.0,
+      "reason": "Business-hours uptime requirement and moderate CPU utilisation (16%). Suggesting shutdown during non-business hours.",
+      "proposed_sku": null,
+      "proposed_sku_reason": "",
+      "sku_recommendation_confidence": "low",
       "policy_violations": [],
       "hard_policy_violations": [],
       "status": "approved"
@@ -31,11 +40,33 @@
       "resource_id": "storage-01",
       "action": "move_to_cool_tier",
       "estimated_monthly_saving": 10.0,
-      "reason": "Storage is underutilized (0% CPU, 0% memory) and has a high monthly cost of $190. Moving to a cooler storage tier could save up to 5% of the total cost.",
+      "reason": "24x7 uptime requirement and low CPU utilisation (0%). Suggesting moving to a cooler storage tier.",
+      "proposed_sku": null,
+      "proposed_sku_reason": "",
+      "sku_recommendation_confidence": "low",
       "policy_violations": [],
       "hard_policy_violations": [],
       "status": "approved"
     }
   ],
-  "rejected_recommendations": []
+  "rejected_recommendations": [
+    {
+      "resource_id": "vm-prod-02",
+      "action": "rightsize_vm",
+      "estimated_monthly_saving": 70.0,
+      "reason": "High CPU utilisation (44%) and high memory utilisation (62%). Suggesting Standard_D4s_v5 SKU.",
+      "proposed_sku": "Standard_D4s_v5",
+      "proposed_sku_reason": "Provides sufficient resources for production environment, while reducing costs.",
+      "sku_recommendation_confidence": "high",
+      "policy_violations": [
+        "Resource is policy-locked.",
+        "Resource does not meet the low-utilisation threshold."
+      ],
+      "hard_policy_violations": [
+        "Resource is policy-locked."
+      ],
+      "status": "blocked",
+      "human_review": "not_permitted"
+    }
+  ]
 }

@@ -9,11 +9,35 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, TypedDict
 
-from azure.identity import ClientSecretCredential
-from azure.mgmt.costmanagement import CostManagementClient
-from azure.mgmt.costmanagement.models import (QueryAggregation,QueryDataset,QueryDefinition,QueryGrouping,QueryTimePeriod,)
-from azure.monitor.query import MetricAggregationType, MetricsQueryClient
-from dotenv import load_dotenv
+try:
+    from azure.identity import ClientSecretCredential
+except ModuleNotFoundError:
+    ClientSecretCredential = None
+
+try:
+    from azure.mgmt.costmanagement import CostManagementClient
+    from azure.mgmt.costmanagement.models import (
+        QueryAggregation,
+        QueryDataset,
+        QueryDefinition,
+        QueryGrouping,
+        QueryTimePeriod,
+    )
+except ModuleNotFoundError:
+    CostManagementClient = None
+    QueryAggregation = QueryDataset = QueryDefinition = QueryGrouping = QueryTimePeriod = None
+
+try:
+    from azure.monitor.query import MetricAggregationType, MetricsQueryClient
+except ModuleNotFoundError:
+    MetricAggregationType = None
+    MetricsQueryClient = None
+
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:
+    def load_dotenv(*args, **kwargs):
+        return False
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama import ChatOllama
 from langgraph.graph import END, START, StateGraph
@@ -40,6 +64,7 @@ FOCUS_FILE = Path(__file__).parent / "output" / "focus_billed_costs.json"
 DATABASE_FILE = Path("output") / "finops_costs.db"
 MAX_EMPTY_RESULT_RETRIES = 2
 RETRY_DELAY_SECONDS = 2
+USE_SAMPLE_DATA_ONLY = True
 AZURE_CPU_METRIC = os.environ.get("AZURE_CPU_METRIC", "Percentage CPU")
 AZURE_MEMORY_METRIC = os.environ.get("AZURE_MEMORY_METRIC", "Available Memory Percentage")
 AZURE_CPU_METRIC_NAMESPACE = os.environ.get("AZURE_CPU_METRIC_NAMESPACE", "microsoft.compute/virtualmachines")
@@ -206,9 +231,16 @@ resource's monthly cost, CPU and memory utilisation, uptime requirements and all
 the corresponding information in the database. Prefer matching live Azure Monitor
 metrics over local inventory utilisation values. Do not treat missing or null
 Azure Monitor values as low utilisation, and do not recommend rightsizing when
-live CPU or memory metrics are unavailable. Each recommendation must include
-resource_id, action (rightsize_vm, schedule_shutdown, or move_to_cool_tier),
-estimated_monthly_saving, and reason. Return JSON only.""",
+live CPU or memory metrics are unavailable.
+
+For any recommendation where action is "rightsize_vm", include:
+- proposed_sku: a suggested Azure VM SKU such as Standard_B2s, Standard_B4ms, Standard_D4s_v5, or Standard_D8s_v5
+- proposed_sku_reason: a brief explanation for the proposed SKU
+- sku_recommendation_confidence: one of "high", "medium", or "low"
+
+For non-VM actions, set proposed_sku to null, proposed_sku_reason to an empty string, and sku_recommendation_confidence to "low".
+
+Each recommendation must include resource_id, action (rightsize_vm, schedule_shutdown, or move_to_cool_tier), estimated_monthly_saving, reason, proposed_sku, proposed_sku_reason, and sku_recommendation_confidence. Return JSON only.""",
             ),
         ]
     )
@@ -424,6 +456,10 @@ def save_audited_report(state: AgentState) -> AgentState:
 
 # Authenticate with Azure Entra ID using a service principal
 def authenticate_service_principal(state: AgentState) -> AgentState:
+    if USE_SAMPLE_DATA_ONLY:
+        return {"credential": None}
+    if ClientSecretCredential is None:
+        raise RuntimeError("Azure SDK is not installed. Enable Azure or set USE_SAMPLE_DATA_ONLY=True.")
     credential = ClientSecretCredential(tenant_id=AZURE_TENANT_ID,client_id=AZURE_CLIENT_ID,client_secret=AZURE_CLIENT_SECRET,)
     return {"credential": credential}
 
@@ -454,6 +490,11 @@ def average_azure_metric(
 
 def collect_azure_metrics(state: AgentState) -> AgentState:
     """Collect 30-day average VM CPU and memory usage from Azure Monitor."""
+    if USE_SAMPLE_DATA_ONLY:
+        return {"azure_metrics": []}
+    if MetricsQueryClient is None:
+        return {"azure_metrics": []}
+
     metrics = []
     client = MetricsQueryClient(state["credential"])
     resource_ids = {
@@ -503,6 +544,12 @@ def collect_azure_metrics(state: AgentState) -> AgentState:
 
 # Gather Azure cost data using the Azure Cost Management API
 def gather_azure_costs(state: AgentState) -> AgentState:
+    if USE_SAMPLE_DATA_ONLY:
+        rows = sample_cost_rows(state["resources"])
+        return {"azure_rows": rows, "excluded_azure_rows": [], "using_sample_data": True}
+    if CostManagementClient is None:
+        return {"azure_rows": [], "azure_error": "Azure Cost Management SDK is not installed; running sample-data-only mode."}
+
     if not AZURE_SUBSCRIPTION_ID:
         return {"azure_rows": [], "azure_error": "AZURE_SUBSCRIPTION_ID is not set; cannot query the Azure tenant."}
 
@@ -549,6 +596,8 @@ def gather_azure_costs(state: AgentState) -> AgentState:
 
 # Route after gather_azure_costs based on whether the query failed or returned no data.
 def route_after_gather_azure_costs(state: AgentState) -> str:
+    if USE_SAMPLE_DATA_ONLY:
+        return "format_focus_data"
     if state.get("azure_error"):
         return "handle_azure_failure"
     if not state["azure_rows"]:
