@@ -7,7 +7,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 try:
     from azure.identity import ClientSecretCredential
@@ -41,7 +41,7 @@ except ModuleNotFoundError:
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama import ChatOllama
 from langgraph.graph import END, START, StateGraph
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from main import INPUT_FILE, load_resources
 
@@ -61,6 +61,7 @@ SUPPORTED_SERVICES = {
 AKS_POOL_MARKERS = ("aks", "agentpool", "nodepool") # used for identifying Azure Kubernetes resources (and excludee them from certain operations)
 OUTPUT_FILE = Path(__file__).parent / "output" / "agent_test_response.json"
 FOCUS_FILE = Path(__file__).parent / "output" / "focus_billed_costs.json"
+ACTION_FILE = Path(__file__).parent / "output" / "recommendation_actions.json"
 DATABASE_FILE = Path("output") / "finops_costs.db"
 MAX_EMPTY_RESULT_RETRIES = 2
 RETRY_DELAY_SECONDS = 2
@@ -92,6 +93,7 @@ class AgentState(TypedDict, total=False):
     human_reviewed_recommendations: list[dict]
     hard_rejected_recommendations: list[dict]
     reviewable_recommendations: list[dict]
+    action_results: list[dict]
 
 
 # FOCUS v1.0 (FinOps Open Cost and Usage Specification) record schema.
@@ -106,6 +108,33 @@ class FocusRecord(BaseModel):
     ServiceName: str
     ResourceID: str
     SubscriptionID: str
+
+
+class Recommendation(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    resource_id: str = Field(min_length=1)
+    action: Literal["rightsize_vm", "schedule_shutdown", "move_to_cool_tier"]
+    estimated_monthly_saving: float = Field(ge=0, allow_inf_nan=False)
+    reason: str = Field(min_length=1)
+    proposed_sku: str | None
+    proposed_sku_reason: str
+    sku_recommendation_confidence: Literal["high", "medium", "low"]
+
+    @model_validator(mode="after")
+    def validate_sku_fields(self) -> Recommendation:
+        if self.action == "rightsize_vm":
+            if not self.proposed_sku:
+                raise ValueError("rightsize_vm recommendations require proposed_sku.")
+            if not self.proposed_sku_reason:
+                raise ValueError("rightsize_vm recommendations require proposed_sku_reason.")
+        elif (
+            self.proposed_sku is not None
+            or self.proposed_sku_reason
+            or self.sku_recommendation_confidence != "low"
+        ):
+            raise ValueError("Non-VM recommendations must not include a SKU proposal.")
+        return self
 
 
 def validate_focus_records(records: list[dict]) -> list[dict]:
@@ -311,7 +340,14 @@ def parse_llm_output(state: AgentState) -> AgentState:
     recommendations = payload.get("recommendations")
     if not isinstance(recommendations, list):
         raise ValueError("The LLM response does not contain a recommendations array.")
-    return {"recommendations": recommendations}
+    try:
+        validated_recommendations = [
+            Recommendation.model_validate(recommendation).model_dump()
+            for recommendation in recommendations
+        ]
+    except ValidationError as error:
+        raise ValueError(f"Invalid recommendation output: {error}") from error
+    return {"recommendations": validated_recommendations}
 
 
 def azure_resource_name(resource_id: str) -> str:
@@ -444,11 +480,45 @@ def review_rejected_recommendations(state: AgentState) -> AgentState:
     }
 
 
+def execute_mock_actions(state: AgentState) -> AgentState:
+    """Simulate approved actions without actually making any changes"""
+    action_descriptions = {
+        "rightsize_vm": lambda recommendation: (
+            f"Would resize the VM to {recommendation.get('proposed_sku')}."
+            if recommendation.get("proposed_sku")
+            else "Cannot simulate VM resizing because no proposed SKU was provided."
+        ),
+        "schedule_shutdown": lambda recommendation: "Would apply the approved VM shutdown schedule.",
+        "move_to_cool_tier": lambda recommendation: "Would move the storage resource to the cool access tier.",
+    }
+    action_results = []
+    for recommendation in state.get("approved_recommendations", []):
+        action = recommendation.get("action")
+        describe_action = action_descriptions.get(action)
+        result = {
+            "resource_id": recommendation.get("resource_id"),
+            "action": action,
+            "execution_mode": "mock",
+            "execution_status": "simulated" if describe_action else "not_supported",
+            "details": (
+                describe_action(recommendation)
+                if describe_action
+                else "No mock executor is defined for this action."
+            ),
+        }
+        action_results.append(result)
+
+    ACTION_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ACTION_FILE.write_text(json.dumps(action_results, indent=2), encoding="utf-8")
+    return {"action_results": action_results}
+
+
 # Save the audited report to a JSON file
 def save_audited_report(state: AgentState) -> AgentState:
     report = {
         "approved_recommendations": state["approved_recommendations"],
         "rejected_recommendations": state["rejected_recommendations"],
+        "action_results": state.get("action_results", []),
     }
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_FILE.write_text(json.dumps(report, indent=2), encoding="utf-8")
@@ -818,6 +888,7 @@ def build_graph():
     workflow.add_node("parse_llm_output", parse_llm_output)
     workflow.add_node("validate_policy_constraints", validate_policy_constraints)
     workflow.add_node("review_rejected_recommendations", review_rejected_recommendations)
+    workflow.add_node("execute_mock_actions", execute_mock_actions)
     workflow.add_node("save_audited_report", save_audited_report)
     workflow.add_node("authenticate_service_principal", authenticate_service_principal)
     workflow.add_node("gather_azure_costs", gather_azure_costs)
@@ -851,7 +922,8 @@ def build_graph():
     workflow.add_edge("analyse_inventory", "parse_llm_output")
     workflow.add_edge("parse_llm_output", "validate_policy_constraints")
     workflow.add_edge("validate_policy_constraints", "review_rejected_recommendations")
-    workflow.add_edge("review_rejected_recommendations", "save_audited_report")
+    workflow.add_edge("review_rejected_recommendations", "execute_mock_actions")
+    workflow.add_edge("execute_mock_actions", "save_audited_report")
     workflow.add_edge("save_audited_report", END)
     return workflow.compile()
 
@@ -868,6 +940,8 @@ def main() -> None:
     print(f"\nAudited recommendations saved to {OUTPUT_FILE}")
     print(f"Approved recommendations: {len(result['approved_recommendations'])}")
     print(f"Rejected recommendations: {len(result['rejected_recommendations'])}")
+    print(f"Mock actions simulated: {sum(action['execution_status'] == 'simulated' for action in result['action_results'])}")
+    print(f"Mock action results saved to {ACTION_FILE}")
     print(f"FOCUS data saved to {FOCUS_FILE}")
     print(f"FOCUS records stored in {result['database_path']}")
     print(f"SQLite records inserted: {result['inserted_records']}")
