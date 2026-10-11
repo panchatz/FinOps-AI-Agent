@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-DATA_DIR = Path(__file__).parent.parent / "data"
+DATA_DIR = Path("c:/temp/data/")
 INPUT_FILE = DATA_DIR / "sample_resources.csv"
 OUTPUT_FILE = Path(__file__).parent / "output" / "recommendations.json"
 

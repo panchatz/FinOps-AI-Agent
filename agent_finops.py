@@ -512,9 +512,8 @@ def execute_mock_actions(state: AgentState) -> AgentState:
     ACTION_FILE.write_text(json.dumps(action_results, indent=2), encoding="utf-8")
     return {"action_results": action_results}
 
-
-# Save the audited report to a JSON file
 def save_audited_report(state: AgentState) -> AgentState:
+    """Save the audited report to a JSON file."""
     report = {
         "approved_recommendations": state["approved_recommendations"],
         "rejected_recommendations": state["rejected_recommendations"],
@@ -524,8 +523,8 @@ def save_audited_report(state: AgentState) -> AgentState:
     OUTPUT_FILE.write_text(json.dumps(report, indent=2), encoding="utf-8")
     return {}
 
-# Authenticate with Azure Entra ID using a service principal
 def authenticate_service_principal(state: AgentState) -> AgentState:
+    """Authenticate with Azure Entra ID using a service principal."""
     if USE_SAMPLE_DATA_ONLY:
         return {"credential": None}
     if ClientSecretCredential is None:
@@ -612,8 +611,8 @@ def collect_azure_metrics(state: AgentState) -> AgentState:
 
     return {"azure_metrics": metrics}
 
-# Gather Azure cost data using the Azure Cost Management API
 def gather_azure_costs(state: AgentState) -> AgentState:
+    """Gather Azure cost data using the Azure Cost Management API."""
     if USE_SAMPLE_DATA_ONLY:
         rows = sample_cost_rows(state["resources"])
         return {"azure_rows": rows, "excluded_azure_rows": [], "using_sample_data": True}

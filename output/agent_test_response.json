@@ -1,46 +1,46 @@
 {
   "approved_recommendations": [
     {
-      "resource_id": "vm-prod-01",
-      "action": "rightsize_vm",
-      "estimated_monthly_saving": 30.0,
-      "reason": "The VM is underutilised (18% CPU, 31% memory) and has a high uptime requirement.",
-      "proposed_sku": "Standard_B2s",
-      "proposed_sku_reason": "A smaller instance size with similar performance characteristics would be more cost-effective.",
-      "sku_recommendation_confidence": "high",
-      "policy_violations": [],
-      "hard_policy_violations": [],
-      "status": "approved"
-    },
-    {
-      "resource_id": "vm-dev-01",
-      "action": "schedule_shutdown",
-      "estimated_monthly_saving": 20.0,
-      "reason": "The VM has a business-hours uptime requirement and is underutilised (12% CPU, 28% memory).",
-      "proposed_sku": null,
-      "proposed_sku_reason": "",
-      "sku_recommendation_confidence": "low",
-      "policy_violations": [],
-      "hard_policy_violations": [],
-      "status": "approved"
-    },
-    {
-      "resource_id": "vm-test-01",
-      "action": "schedule_shutdown",
-      "estimated_monthly_saving": 15.0,
-      "reason": "The VM has a business-hours uptime requirement and is underutilised (16% CPU, 24% memory).",
-      "proposed_sku": null,
-      "proposed_sku_reason": "",
-      "sku_recommendation_confidence": "low",
-      "policy_violations": [],
-      "hard_policy_violations": [],
-      "status": "approved"
-    },
-    {
       "resource_id": "storage-01",
       "action": "move_to_cool_tier",
       "estimated_monthly_saving": 10.0,
-      "reason": "The storage is underutilised (0% CPU, 0% memory) and has a high uptime requirement.",
+      "reason": "Storage account is underutilized and can be moved to a cooler tier for cost savings.",
+      "proposed_sku": null,
+      "proposed_sku_reason": "",
+      "sku_recommendation_confidence": "low",
+      "policy_violations": [],
+      "hard_policy_violations": [],
+      "status": "approved"
+    },
+    {
+      "resource_id": "vm-dev-01",
+      "action": "rightsize_vm",
+      "estimated_monthly_saving": 50.0,
+      "reason": "VM is underutilized and can be right-sized to a smaller SKU for cost savings.",
+      "proposed_sku": "Standard_B2s",
+      "proposed_sku_reason": "This SKU has similar specs to the current one but at a lower price point.",
+      "sku_recommendation_confidence": "high",
+      "policy_violations": [],
+      "hard_policy_violations": [],
+      "status": "approved"
+    },
+    {
+      "resource_id": "vm-prod-01",
+      "action": "rightsize_vm",
+      "estimated_monthly_saving": 100.0,
+      "reason": "VM is underutilized and can be right-sized to a smaller SKU for cost savings.",
+      "proposed_sku": "Standard_B4ms",
+      "proposed_sku_reason": "This SKU has similar specs to the current one but at a lower price point.",
+      "sku_recommendation_confidence": "high",
+      "policy_violations": [],
+      "hard_policy_violations": [],
+      "status": "approved"
+    },
+    {
+      "resource_id": "vm-test-01",
+      "action": "schedule_shutdown",
+      "estimated_monthly_saving": 20.0,
+      "reason": "VM is only used for testing and can be shut down during non-business hours to save costs.",
       "proposed_sku": null,
       "proposed_sku_reason": "",
       "sku_recommendation_confidence": "low",
@@ -49,54 +49,35 @@
       "status": "approved"
     }
   ],
-  "rejected_recommendations": [
-    {
-      "resource_id": "vm-prod-02",
-      "action": "rightsize_vm",
-      "estimated_monthly_saving": 40.0,
-      "reason": "The VM is underutilised (44% CPU, 62% memory) and has a high uptime requirement.",
-      "proposed_sku": "Standard_B4ms",
-      "proposed_sku_reason": "A smaller instance size with similar performance characteristics would be more cost-effective.",
-      "sku_recommendation_confidence": "high",
-      "policy_violations": [
-        "Resource is policy-locked.",
-        "Resource does not meet the low-utilisation threshold."
-      ],
-      "hard_policy_violations": [
-        "Resource is policy-locked."
-      ],
-      "status": "blocked",
-      "human_review": "not_permitted"
-    }
-  ],
+  "rejected_recommendations": [],
   "action_results": [
-    {
-      "resource_id": "vm-prod-01",
-      "action": "rightsize_vm",
-      "execution_mode": "mock",
-      "execution_status": "simulated",
-      "details": "Would resize the VM to Standard_B2s."
-    },
-    {
-      "resource_id": "vm-dev-01",
-      "action": "schedule_shutdown",
-      "execution_mode": "mock",
-      "execution_status": "simulated",
-      "details": "Would apply the approved VM shutdown schedule."
-    },
-    {
-      "resource_id": "vm-test-01",
-      "action": "schedule_shutdown",
-      "execution_mode": "mock",
-      "execution_status": "simulated",
-      "details": "Would apply the approved VM shutdown schedule."
-    },
     {
       "resource_id": "storage-01",
       "action": "move_to_cool_tier",
       "execution_mode": "mock",
       "execution_status": "simulated",
       "details": "Would move the storage resource to the cool access tier."
+    },
+    {
+      "resource_id": "vm-dev-01",
+      "action": "rightsize_vm",
+      "execution_mode": "mock",
+      "execution_status": "simulated",
+      "details": "Would resize the VM to Standard_B2s."
+    },
+    {
+      "resource_id": "vm-prod-01",
+      "action": "rightsize_vm",
+      "execution_mode": "mock",
+      "execution_status": "simulated",
+      "details": "Would resize the VM to Standard_B4ms."
+    },
+    {
+      "resource_id": "vm-test-01",
+      "action": "schedule_shutdown",
+      "execution_mode": "mock",
+      "execution_status": "simulated",
+      "details": "Would apply the approved VM shutdown schedule."
     }
   ]
 }

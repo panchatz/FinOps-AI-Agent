@@ -1,0 +1,9 @@
+azure-identity
+azure-mgmt-costmanagement
+azure-monitor-query
+python-dotenv
+langchain-core
+langchain-ollama
+langgraph
+pydantic
+requests
